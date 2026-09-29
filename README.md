@@ -15,7 +15,7 @@ Requires macOS 13+, Apple Silicon, Swift 5.9+ (Command Line Tools are enough).
 
 ```bash
 ./scripts/fetch-llama.sh   # downloads the prebuilt llama.cpp framework into Vendor/
-./build.sh                 # builds and ad-hoc signs Cotypist.app
+./build.sh                 # builds and signs Cotypist.app (ad-hoc; use SIGN_ID="My Cert" ./build.sh to sign with your own certificate)
 open Cotypist.app
 ```
 

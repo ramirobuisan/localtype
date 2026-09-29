@@ -21,5 +21,6 @@ cat > "$APP/Contents/Info.plist" <<PL
 <key>NSAppleEventsUsageDescription</key><string>Needed to insert suggestions.</string>
 </dict></plist>
 PL
-codesign --force --deep --sign - "$APP"
+# SIGN_ID: name of a code-signing certificate (keeps the Accessibility grant across rebuilds); "-" = ad-hoc
+codesign --force --deep --sign "${SIGN_ID:--}" "$APP"
 echo "Built $APP"
