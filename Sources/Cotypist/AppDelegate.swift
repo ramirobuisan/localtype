@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ModelsWindow.shared.onChange = { [weak self] in self?.checkModelStatusOnly() }
         Controller.shared.onStatus = { [weak self] s in self?.statusLine.title = s }
         startWhenTrusted()
+        if CommandLine.arguments.contains("--settings") { SettingsWindow.shared.show() }
     }
 
     func applicationWillTerminate(_ n: Notification) { LlamaEngine.shared.shutdown() }

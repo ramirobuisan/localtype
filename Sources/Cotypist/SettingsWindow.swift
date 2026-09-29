@@ -6,6 +6,19 @@ private final class Trampoline: NSObject {
     @objc func fire(_ sender: Any?) { f(sender) }
 }
 
+private final class CardView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6).cgColor
+    }
+    override var wantsUpdateLayer: Bool { true }
+}
+
 private final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
 final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
@@ -41,43 +54,38 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         w.delegate = self
         w.center()
 
-        let col = NSTableColumn(identifier: .init("s")); col.width = 170
+        let col = NSTableColumn(identifier: .init("s")); col.width = 160
         sidebar.addTableColumn(col)
         sidebar.headerView = nil
         sidebar.style = .sourceList
         sidebar.rowHeight = 30
         sidebar.dataSource = self
         sidebar.delegate = self
-        let sbScroll = NSScrollView()
+
+        let cv = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 600))
+        let sbScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 180, height: 600))
+        sbScroll.autoresizingMask = [.height]
         sbScroll.documentView = sidebar
         sbScroll.drawsBackground = false
-        sbScroll.translatesAutoresizingMaskIntoConstraints = false
+        sbScroll.hasVerticalScroller = false
 
+        scroll.frame = NSRect(x: 180, y: 0, width: 640, height: 600)
+        scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let cv = NSView()
         cv.addSubview(sbScroll); cv.addSubview(scroll)
         w.contentView = cv
-        NSLayoutConstraint.activate([
-            sbScroll.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
-            sbScroll.topAnchor.constraint(equalTo: cv.topAnchor),
-            sbScroll.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
-            sbScroll.widthAnchor.constraint(equalToConstant: 180),
-            scroll.leadingAnchor.constraint(equalTo: sbScroll.trailingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: cv.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
-        ])
+        w.setContentSize(NSSize(width: 820, height: 600))
         window = w
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { pages.count }
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         let img = NSImageView(image: NSImage(systemSymbolName: symbols[row], accessibilityDescription: nil) ?? NSImage())
+        img.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let l = NSTextField(labelWithString: pages[row])
-        let s = NSStackView(views: [img, l]); s.spacing = 8
+        let s = NSStackView(views: [img, l]); s.spacing = 8; s.alignment = .centerY
         return s
     }
     func tableViewSelectionDidChange(_ n: Notification) { if sidebar.selectedRow >= 0 { select(sidebar.selectedRow) } }
@@ -101,15 +109,19 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         stack.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(stack)
+        scroll.documentView = doc
+        let clip = scroll.contentView
         NSLayoutConstraint.activate([
+            doc.topAnchor.constraint(equalTo: clip.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
             stack.topAnchor.constraint(equalTo: doc.topAnchor),
             stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
-        scroll.documentView = doc
-        doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
         for v in sections { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true }
         scroll.contentView.scroll(to: .zero)
     }
@@ -154,13 +166,15 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let s = NSStackView(views: views)
         s.orientation = .vertical; s.alignment = .leading; s.spacing = 0
         for v in views { v.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true }
-        let box = NSBox()
-        box.boxType = .custom
-        box.cornerRadius = 8
-        box.borderWidth = 0
-        box.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6)
-        box.contentViewMargins = .zero
-        box.contentView = s
+        let box = CardView()
+        s.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(s)
+        NSLayoutConstraint.activate([
+            s.topAnchor.constraint(equalTo: box.topAnchor),
+            s.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+            s.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            s.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+        ])
         return box
     }
 
