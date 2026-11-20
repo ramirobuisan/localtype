@@ -91,7 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             perApp.isHidden = true
         }
         // Website of the page being typed in, if the frontmost app shows one.
-        frontmostDomain = app.flatMap { AX.focusedElement(ofApp: $0.processIdentifier) }.flatMap(AX.webDomain(of:))
+        frontmostDomain = app.flatMap { $0.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil
+                                        : AX.focusedElement(ofApp: $0.processIdentifier) }.flatMap(AX.webDomain(of:))
         if let domain = frontmostDomain {
             let site = Settings.domainRule(for: domain)?.domain ?? domain
             perSite.isHidden = false
@@ -135,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        SettingsWindow.shared.show(page: "General")
+        SettingsWindow.shared.show(page: SettingsWindow.lastPage)
         return true
     }
 
@@ -185,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openSettings() { SettingsWindow.shared.show(page: "General") }
+    @objc private func openSettings() { SettingsWindow.shared.show(page: SettingsWindow.lastPage) }
     @objc private func openSetup() { OnboardingWindow.shared.show() }
 
     /// Status line at the top of the menu: a colored dot (green ready, orange needs attention, gray working) and text.

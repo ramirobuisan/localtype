@@ -179,6 +179,8 @@ final class Controller {
     }
 
     private var lastPrefix = ""
+    /// The current suggestion belongs to the Setup window's "Try it" box: not recorded anywhere.
+    private var practice = false
     private var lastApp: String?
     private var lastElement: AXUIElement?
 
@@ -189,7 +191,8 @@ final class Controller {
         overlay.coverText = ctx.hasTextAfter
         overlay.coverUntilX = ctx.textAfterMaxX
         overlay.backdrop = nil
-        if Settings.matchAppearance {
+        practice = ctx.isPractice
+        if Settings.matchAppearance, !ctx.isPractice {
             // Strip to the right of the caret, where the suggestion will go; sampled while the model works.
             let p = ctx.caretPoint
             Backdrop.sample(CGRect(x: p.x + 1, y: p.y - ctx.lineHeight / 2, width: 160, height: ctx.lineHeight)) { [weak self] c in
@@ -202,7 +205,7 @@ final class Controller {
         lastPrefix = ctx.prefix
         lastApp = ctx.bundleID
         lastElement = ctx.element
-        recordNewSentences(ctx.prefix, element: ctx.element, app: ctx.bundleID)
+        if !ctx.isPractice { recordNewSentences(ctx.prefix, element: ctx.element, app: ctx.bundleID) }
 
         if Settings.emojiCompletion {
             if Settings.emojiEmoticons, let (item, length) = Emoji.emoticon(in: ctx.prefix) {
@@ -228,13 +231,13 @@ final class Controller {
         if Settings.typoGuard, let word = Controller.currentWord(ctx.prefix), let typo = Controller.checkTypo(word) {
             if Settings.suggestFixes, let fix = typo {
                 suggestion = fix; fixDelete = word.count
-                let typoRect = AX.screenRect(ctx.element, location: ctx.caretIndex - word.count, length: word.count)
+                let typoRect = ctx.isPractice ? nil : AX.screenRect(ctx.element, location: ctx.caretIndex - word.count, length: word.count)
                 overlay.show(fix, at: ctx.caretRect, isFix: true, typo: typoRect)
             }
             return
         }
         var screen: String?
-        if Settings.useScreen {
+        if Settings.useScreen, !ctx.isPractice {
             ScreenContext.shared.refreshIfStale(pid: ctx.pid, caret: ctx.caretPoint)
             screen = ScreenContext.shared.text(pid: ctx.pid, caret: ctx.caretPoint, excluding: ctx.prefix)
         }
@@ -465,7 +468,7 @@ final class Controller {
     }
 
     private func recordAccepted(_ text: String) {
-        guard Settings.recordWriting else { return }
+        guard Settings.recordWriting, !practice else { return }
         let full = lastPrefix + text
         if let partial = History.lastSentence(full, completed: false) {
             acceptedSentenceStarts.append(partial)
@@ -489,7 +492,7 @@ final class Controller {
         Emoji.recordUse(item.char)
         deleteBackward(n)
         type(item.char)
-        Stats.shared.record(item.char, app: lastApp)
+        if !practice { Stats.shared.record(item.char, app: lastApp) }
     }
 
     private func deleteBackward(_ n: Int) {
@@ -526,7 +529,7 @@ final class Controller {
         Settings.accepted += 1; Settings.wordsAccepted += 1
         recordAccepted(word)
         type(word)
-        Stats.shared.record(word, app: lastApp)
+        if !practice { Stats.shared.record(word, app: lastApp) }
         guard !rest.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         // Let the target app apply the insert, then re-anchor the remainder at the new caret.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
@@ -550,7 +553,7 @@ final class Controller {
         Settings.accepted += 1
         Settings.wordsAccepted += take.split(whereSeparator: { $0.isWhitespace }).count
         type(take)
-        Stats.shared.record(take, app: lastApp)
+        if !practice { Stats.shared.record(take, app: lastApp) }
         guard !rest.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
             guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }

@@ -8,6 +8,7 @@ final class HistoryWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NS
     private let table = NSTableView()
     private let search = NSSearchField()
     private let countLabel = NSTextField(labelWithString: "")
+    private let emptyLabel = NSTextField(wrappingLabelWithString: "")
     private var rows: [History.Entry] = []
     private var appNames: [String: String] = [:]
     private let dateFormat: DateFormatter = { let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short; return f }()
@@ -20,15 +21,31 @@ final class HistoryWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NS
     }
 
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
-                         styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 520),
+                         styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+                         backing: .buffered, defer: false)
         w.title = "Typing History"
+        w.titleVisibility = .hidden
+        w.titlebarAppearsTransparent = true
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 520, height: 300)
+        w.minSize = NSSize(width: 560, height: 360)
         w.delegate = self
         w.center()
 
-        for (id, title, width) in [("date", "Date", 130.0), ("app", "App", 130.0), ("text", "Text", 460.0)] {
+        // Header: icon, title and where the data lives.
+        let tile = NSImageView(image: iconTile("clock.arrow.circlepath", .systemPurple, size: 38))
+        tile.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        tile.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        let title = NSTextField(labelWithString: "Typing History")
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        let note = NSTextField(wrappingLabelWithString:
+            "Sentences you wrote, used to make suggestions sound like you. Encrypted and stored only on this Mac.")
+        note.font = .systemFont(ofSize: 12); note.textColor = .secondaryLabelColor
+        let titles = NSStackView(views: [title, note]); titles.orientation = .vertical; titles.alignment = .leading; titles.spacing = 2
+        titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [tile, titles]); header.alignment = .centerY; header.spacing = 12
+
+        for (id, title, width) in [("date", "Date", 140.0), ("app", "App", 130.0), ("text", "Text", 440.0)] {
             let c = NSTableColumn(identifier: .init(id)); c.title = title; c.width = width
             if id == "text" { c.resizingMask = .autoresizingMask }
             table.addTableColumn(c)
@@ -36,38 +53,60 @@ final class HistoryWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NS
         table.dataSource = self
         table.delegate = self
         table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = true
+        table.style = .plain
+        table.rowHeight = 26
+        table.backgroundColor = .clear
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         let sv = NSScrollView()
         sv.documentView = table
         sv.hasVerticalScroller = true
-        sv.borderType = .bezelBorder
+        sv.drawsBackground = false
+        sv.borderType = .noBorder
+        let card = CardView()
+        sv.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(sv)
+        NSLayoutConstraint.activate([
+            sv.topAnchor.constraint(equalTo: card.topAnchor, constant: 4), sv.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -4),
+            sv.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 4), sv.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -4),
+        ])
+        // Shown over the empty list: why there's nothing yet.
+        emptyLabel.font = .systemFont(ofSize: 13)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(emptyLabel)
+        NSLayoutConstraint.activate([
+            emptyLabel.centerXAnchor.constraint(equalTo: card.centerXAnchor), emptyLabel.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            emptyLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+        ])
 
-        search.placeholderString = "Search"
+        search.placeholderString = "Search text or app"
         search.delegate = self
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.font = .systemFont(ofSize: 12)
         let delSel = NSButton(title: "Delete Selected", target: self, action: #selector(deleteSelected))
         let delAll = NSButton(title: "Delete All…", target: self, action: #selector(deleteAll))
-        countLabel.textColor = .secondaryLabelColor
-        countLabel.font = .systemFont(ofSize: 11)
-        let note = NSTextField(wrappingLabelWithString:
-            "Encrypted and stored only on this Mac (key in your Keychain). Used to make suggestions sound like you.")
-        note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
+        for b in [delSel, delAll] { b.bezelStyle = .push }
         let top = NSStackView(views: [search, NSView(), countLabel])
-        let bottom = NSStackView(views: [delSel, delAll, NSView()])
-        let stack = NSStackView(views: [top, sv, bottom, note])
+        top.alignment = .centerY
+        let bottom = NSStackView(views: [delAll, NSView(), delSel])
+        let views: [NSView] = [header, top, card, bottom]
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        stack.spacing = 12
+        stack.setCustomSpacing(18, after: header)
+        stack.edgeInsets = NSEdgeInsets(top: 40, left: 24, bottom: 20, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        card.setContentHuggingPriority(.defaultLow, for: .vertical)
         let cv = NSView()
         cv.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: cv.topAnchor), stack.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: cv.leadingAnchor), stack.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
-            search.widthAnchor.constraint(equalToConstant: 240),
+            search.widthAnchor.constraint(equalToConstant: 260),
         ])
-        for v in [top, sv, bottom, note] { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true }
+        for v in views { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -48).isActive = true }
         w.contentView = cv
         window = w
     }
@@ -86,6 +125,11 @@ final class HistoryWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NS
         rows = History.shared.entries.reversed().filter { q.isEmpty || $0.text.lowercased().contains(q) || appName($0.app).lowercased().contains(q) }
         table.reloadData()
         countLabel.stringValue = q.isEmpty ? "\(rows.count) texts" : "\(rows.count) of \(History.shared.count) texts"
+        emptyLabel.isHidden = !rows.isEmpty
+        emptyLabel.stringValue = History.shared.count == 0
+            ? (Settings.recordWriting ? "Nothing recorded yet. Finished sentences you write will appear here."
+                                      : "Nothing recorded. Turn on “Record your writing” in Settings → Personalization to let suggestions learn your phrasing.")
+            : "No texts match your search."
     }
 
     func controlTextDidChange(_ obj: Notification) { reloadRows() }

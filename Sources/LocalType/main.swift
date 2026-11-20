@@ -137,6 +137,28 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-upd
     RunLoop.main.run()
 }
 
+// Practice box check: LocalType --selftest-practice — reads a "Try it" text view directly (no Accessibility).
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-practice" {
+    _ = NSApplication.shared
+    let w = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 400, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+    let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+    tv.identifier = AX.practiceID
+    tv.font = .systemFont(ofSize: 14)
+    tv.string = "Thanks for the update, I'll"
+    tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+    w.contentView = tv
+    w.orderFront(nil)
+    let other = NSTextView(); other.string = "Not the practice box"
+    print("other text view ignored: \(AX.ownContext(other) == nil)")
+    let t0 = Date()
+    guard let ctx = AX.ownContext(tv) else { print("practice context: nil"); exit(1) }
+    print("practice context in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: prefix \(ctx.prefix.debugDescription), caret \(ctx.caretRect), font \(ctx.style?.font.pointSize ?? 0), isPractice \(ctx.isPractice)")
+    MLXServeStore.shared.prepare { _ in
+        LLM().complete(prefix: ctx.prefix, appName: ctx.appName) { out in print("suggestion: \(out.map { $0.debugDescription } ?? "nil")"); exit(0) }
+    }
+    RunLoop.main.run()
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []

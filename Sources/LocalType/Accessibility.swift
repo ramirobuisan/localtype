@@ -23,6 +23,8 @@ struct FieldContext {
     let hasTextAfter: Bool
     /// Right edge (Cocoa x) of that following text, so a suggestion's backing can hide all of it.
     let textAfterMaxX: CGFloat?
+    /// The "Try it" box in LocalType's own Setup window (read directly, never recorded).
+    var isPractice = false
 
     /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
     var caretPoint: CGPoint {
@@ -54,6 +56,9 @@ enum AX {
     /// Reads the focused text field. Returns nil for secure fields, selections, mid-line carets, etc.
     /// `element` defaults to the system-wide focused element (the self-test passes one app's focused field).
     static func readContext(element: AXUIElement? = nil) -> FieldContext? {
+        // LocalType's own windows are never queried through Accessibility: the request would be answered by this
+        // same main thread, which is busy waiting for it (a freeze of several seconds).
+        if element == nil, NSApp.isActive { return ownContext() }
         guard let el = element ?? focusedElement() else { return nil }
 
         var pid: pid_t = 0
@@ -176,6 +181,29 @@ enum AX {
         return CGRect(origin: p, size: s)
     }
 
+    /// Identifier of the "Try it" text box in the Setup window, the only own field that gets suggestions.
+    static let practiceID = NSUserInterfaceItemIdentifier("localtype.practice")
+
+    /// The practice box, read straight from the text view.
+    static func ownContext(_ textView: NSTextView? = nil) -> FieldContext? {
+        guard let tv = textView ?? NSApp.keyWindow?.firstResponder as? NSTextView, tv.identifier == practiceID else { return nil }
+        let sel = tv.selectedRange()
+        guard sel.length == 0, sel.location > 0 else { return nil }
+        let ns = tv.string as NSString
+        let restOfLine = ns.substring(from: sel.location).prefix { $0 != "\n" }
+        guard Settings.completeInside || restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }) else { return nil }
+        let prefix = ns.substring(to: sel.location)
+        guard prefix.contains(where: { !$0.isWhitespace }) else { return nil }
+        let rect = tv.firstRect(forCharacterRange: NSRange(location: sel.location, length: 0), actualRange: nil)
+        guard rect.height > 0 else { return nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return FieldContext(element: AXUIElementCreateApplication(me), prefix: String(prefix.suffix(1500)),
+                            caretRect: NSRect(x: rect.minX, y: rect.minY, width: 0, height: rect.height), lineHeight: rect.height,
+                            bundleID: Bundle.main.bundleIdentifier, appName: "LocalType", pid: me, domain: nil,
+                            caretIndex: sel.location, style: TextStyle(font: tv.font ?? .systemFont(ofSize: 13), color: tv.textColor),
+                            hasTextAfter: !restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }), textAfterMaxX: nil, isPractice: true)
+    }
+
     struct Selection {
         let element: AXUIElement
         let text: String
@@ -186,7 +214,7 @@ enum AX {
 
     /// A short selection (a word or phrase, up to 4 words) in an editable text field, for synonyms.
     static func readSelection() -> Selection? {
-        guard let el = focusedElement() else { return nil }
+        guard !NSApp.isActive, let el = focusedElement() else { return nil }   // never our own windows (see readContext)
         var pid: pid_t = 0
         AXUIElementGetPid(el, &pid)
         guard pid != ProcessInfo.processInfo.processIdentifier else { return nil }

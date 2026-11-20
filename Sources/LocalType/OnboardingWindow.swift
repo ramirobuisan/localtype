@@ -15,6 +15,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private let screenStatus = NSTextField(labelWithString: "")
     private let emojiSwitch = NSSwitch()
     private let style = NSTextView()
+    private let practice = NSTextView()
 
     func show() {
         if window == nil { build() }
@@ -85,19 +86,35 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         styleBox.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 10, right: 14)
         styleScroll.widthAnchor.constraint(equalTo: styleBox.widthAnchor, constant: -24).isActive = true
 
-        let tips = NSTextField(wrappingLabelWithString:
-            "Using it: type in any app and pause briefly. Each ⇥ accepts one word, ⌥⇥ the whole suggestion, Esc dismisses. Type :name for an emoji. The menu-bar icon has Settings and Models.")
-        tips.font = .systemFont(ofSize: 11)
-        tips.textColor = .secondaryLabelColor
+        // "Try it": the one own text box LocalType suggests in (read directly, never recorded).
+        practice.identifier = AX.practiceID
+        practice.isRichText = false
+        practice.font = .systemFont(ofSize: 14)
+        practice.textContainerInset = NSSize(width: 4, height: 6)
+        practice.drawsBackground = false
+        practice.isVerticallyResizable = true
+        practice.autoresizingMask = [.width]
+        practice.textContainer?.widthTracksTextView = true
+        practice.isAutomaticSpellingCorrectionEnabled = false
+        practice.isAutomaticTextCompletionEnabled = false
+        let practiceScroll = NSScrollView()
+        practiceScroll.documentView = practice
+        practiceScroll.drawsBackground = false
+        practiceScroll.borderType = .noBorder
+        practiceScroll.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        let tips = label("Type something, e.g. “Thanks for the update, I'll”, and pause: the suggestion appears in grey. Each ⇥ takes a word, ⌥⇥ all of it, Esc dismisses. :fire gives 🔥. Needs Accessibility access.", bold: false)
+        let practiceBox = NSStackView(views: [practiceScroll, tips])
+        practiceBox.orientation = .vertical; practiceBox.alignment = .leading; practiceBox.spacing = 6
+        practiceBox.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 10, right: 14)
+        practiceScroll.widthAnchor.constraint(equalTo: practiceBox.widthAnchor, constant: -24).isActive = true
 
         let done = NSButton(title: "Done", target: self, action: #selector(finish))
         done.keyEquivalent = "\r"
         done.bezelStyle = .push
         done.controlSize = .large
         done.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
-        let footer = NSStackView(views: [tips, done])
-        footer.alignment = .centerY; footer.spacing = 16
-        tips.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let footer = NSStackView(views: [NSView(), done])
+        footer.alignment = .centerY
 
         let views: [NSView] = [
             header,
@@ -113,14 +130,15 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
                 step("face.smiling", .systemYellow, "Emoji completion", "Type :fire or :thumbs_up to get 🔥 or 👍.", nil, emojiSwitch),
             ]),
             group("How you write", [styleBox]),
+            group("Try it", [practiceBox]),
             footer,
         ]
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 20
-        stack.setCustomSpacing(24, after: header)
-        stack.edgeInsets = NSEdgeInsets(top: 44, left: 32, bottom: 24, right: 32)
+        stack.spacing = 16
+        stack.setCustomSpacing(20, after: header)
+        stack.edgeInsets = NSEdgeInsets(top: 40, left: 32, bottom: 22, right: 32)
         stack.translatesAutoresizingMaskIntoConstraints = false
         for v in views { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -64).isActive = true }
 

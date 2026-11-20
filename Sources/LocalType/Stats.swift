@@ -89,9 +89,37 @@ final class Stats {
 }
 
 /// Simple bar chart for the Statistics page.
-final class BarChartView: NSView {
-    var data: [(Date, Int)] = [] { didSet { needsDisplay = true } }
+final class BarChartView: NSView, NSViewToolTipOwner {
+    var data: [(Date, Int)] = [] { didSet { needsDisplay = true; needsLayout = true } }
     var grouping: Stats.Grouping = .day
+    /// What the bars count, for tooltips ("words", "completions", "characters").
+    var unit = "words"
+    private var tipIndex: [NSView.ToolTipTag: Int] = [:]
+
+    override func layout() {
+        super.layout()
+        // One tooltip per bar slot (the whole column, so short bars are easy to hover).
+        removeAllToolTips(); tipIndex = [:]
+        guard !data.isEmpty, data.contains(where: { $0.1 > 0 }) else { return }
+        let slot = bounds.width / CGFloat(data.count)
+        for i in data.indices {
+            let tag = addToolTip(NSRect(x: slot * CGFloat(i), y: 0, width: slot, height: bounds.height), owner: self, userData: nil)
+            tipIndex[tag] = i
+        }
+    }
+
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let i = tipIndex[tag], i < self.data.count else { return "" }
+        let (date, value) = self.data[i]
+        let f = DateFormatter()
+        switch grouping {
+        case .day: f.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        case .week: f.setLocalizedDateFormatFromTemplate("d MMM")
+        case .month: f.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        }
+        let when = (grouping == .week ? "Week of " : "") + f.string(from: date)
+        return "\(when): \(value) \(value == 1 ? String(unit.dropLast()) : unit)"
+    }
 
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 150) }
 

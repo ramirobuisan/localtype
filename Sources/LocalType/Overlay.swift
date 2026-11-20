@@ -135,7 +135,11 @@ final class Overlay {
             origin.x = min(origin.x, screen.visibleFrame.maxX - width)
         }
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: h)), display: true)
+        if panel.isVisible { panel.alphaValue = 1; return }
+        // Fade in the first time it appears; later updates (next word, background sample) just redraw.
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; panel.animator().alphaValue = 1 }
     }
 
     func hide() { panel.orderOut(nil); last = nil }

@@ -8,7 +8,7 @@ private final class Trampoline: NSObject {
 
 private final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
-final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
+final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate {
     static let shared = SettingsWindow()
 
     private struct Page { let name: String; let symbol: String; let color: NSColor; let blurb: String }
@@ -42,14 +42,54 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     /// Rebuilds the visible page (after a setting changes what it shows).
-    private func reload() { select(max(0, sidebar.selectedRow)) }
+    private func reload() { select(currentPage) }
+
+    // Sidebar search: which pages are listed, and the searchable text of each page (built on first search).
+    private let searchField = NSSearchField()
+    private var visible: [Int] = []
+    private var currentPage = 1
+    private var pageText: [String]?
 
     func show(page: Int = 0) {
         if window == nil { build() }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        searchField.stringValue = ""
+        visible = Array(pageInfo.indices)
+        sidebar.reloadData()
         sidebar.selectRowIndexes([page], byExtendingSelection: false)
         select(page)
+    }
+
+    /// Every string a page shows (titles, descriptions, buttons, menu items), lowercased, for search.
+    private func searchableText(_ i: Int) -> String {
+        var out: [String] = [pageInfo[i].name, pageInfo[i].blurb]
+        func collect(_ v: NSView) {
+            if let p = v as? NSPopUpButton { out += p.itemTitles }
+            else if let t = v as? NSTextField { out.append(t.stringValue) }
+            else if let b = v as? NSButton { out.append(b.title) }
+            v.subviews.forEach(collect)
+        }
+        build(page: i).forEach(collect)
+        return out.joined(separator: " ").lowercased()
+    }
+
+    func controlTextDidChange(_ n: Notification) {
+        guard (n.object as? NSSearchField) === searchField else { return }
+        let words = searchField.stringValue.lowercased().split(separator: " ").map(String.init)
+        if words.isEmpty {
+            visible = Array(pageInfo.indices)
+        } else {
+            if pageText == nil { pageText = pageInfo.indices.map(searchableText); select(currentPage) }
+            visible = pageInfo.indices.filter { i in words.allSatisfy { pageText![i].contains($0) } }
+        }
+        sidebar.reloadData()
+        if let row = visible.firstIndex(of: currentPage) {
+            sidebar.selectRowIndexes([row], byExtendingSelection: false)
+        } else if let first = visible.first {
+            sidebar.selectRowIndexes([0], byExtendingSelection: false)
+            select(first)
+        }
     }
 
     // MARK: Window
@@ -69,7 +109,22 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         sbScroll.documentView = sidebar
         sbScroll.drawsBackground = false
         sbScroll.hasVerticalScroller = false
-        sidebarVC.view = sbScroll
+        searchField.placeholderString = "Search"
+        searchField.delegate = self
+        searchField.sendsSearchStringImmediately = true
+        let sideView = NSView()
+        for v in [searchField, sbScroll] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; sideView.addSubview(v) }
+        NSLayoutConstraint.activate([
+            searchField.topAnchor.constraint(equalTo: sideView.safeAreaLayoutGuide.topAnchor, constant: 8),
+            searchField.leadingAnchor.constraint(equalTo: sideView.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: sideView.trailingAnchor, constant: -12),
+            sbScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
+            sbScroll.leadingAnchor.constraint(equalTo: sideView.leadingAnchor),
+            sbScroll.trailingAnchor.constraint(equalTo: sideView.trailingAnchor),
+            sbScroll.bottomAnchor.constraint(equalTo: sideView.bottomAnchor),
+        ])
+        sbScroll.automaticallyAdjustsContentInsets = false
+        sidebarVC.view = sideView
 
         let contentVC = NSViewController()
         scroll.hasVerticalScroller = true
@@ -107,9 +162,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         window = w
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { pageInfo.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
-        let p = pageInfo[row]
+        let p = pageInfo[visible[row]]
         let cell = NSTableCellView()
         let img = NSImageView(image: iconTile(p.symbol, p.color, size: 22))
         let label = NSTextField(labelWithString: p.name)
@@ -128,7 +183,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         ])
         return cell
     }
-    func tableViewSelectionDidChange(_ n: Notification) { if sidebar.selectedRow >= 0 { select(sidebar.selectedRow) } }
+    func tableViewSelectionDidChange(_ n: Notification) {
+        let row = sidebar.selectedRow
+        if row >= 0, row < visible.count, visible[row] != currentPage { select(visible[row]) }
+    }
 
     /// Icon, title and one-line description at the top of each page.
     private func header(_ p: Page) -> NSView {
@@ -148,24 +206,35 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return h
     }
 
+    /// The page shown last, so Settings… reopens where you were.
+    static var lastPage: String {
+        get { UserDefaults.standard.string(forKey: "settingsLastPage") ?? "General" }
+        set { UserDefaults.standard.set(newValue, forKey: "settingsLastPage") }
+    }
+
+    private func build(page i: Int) -> [NSView] {
+        switch pages[i] {
+        case "Setup": return setup()
+        case "Labs": return labs()
+        case "About": return about()
+        case "Emoji": return emojiPage()
+        case "General": return general()
+        case "Context": return context()
+        case "Personalization": return personalization()
+        case "Shortcuts": return shortcuts()
+        case "Battery": return battery()
+        case "App Settings": return appSettings()
+        default: return statistics()
+        }
+    }
+
     private func select(_ i: Int) {
         retained = []; textBindings = [:]
+        SettingsWindow.lastPage = pageInfo[i].name
         window?.title = pageInfo[i].name
         window?.subtitle = ""
-        var sections: [NSView]
-        switch pages[i] {
-        case "Setup": sections = setup()
-        case "Labs": sections = labs()
-        case "About": sections = about()
-        case "Emoji": sections = emojiPage()
-        case "General": sections = general()
-        case "Context": sections = context()
-        case "Personalization": sections = personalization()
-        case "Shortcuts": sections = shortcuts()
-        case "Battery": sections = battery()
-        case "App Settings": sections = appSettings()
-        default: sections = statistics()
-        }
+        currentPage = i
+        let sections = build(page: i)
         let all = [header(pageInfo[i])] + sections
         let stack = NSStackView(views: all)
         stack.orientation = .vertical
@@ -982,6 +1051,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         let spans = [(7, "Last 7 Days"), (30, "Last 30 Days"), (90, "Last 90 Days"), (365, "Last 12 Months")]
         let chart = BarChartView()
         chart.grouping = statsGrouping
+        chart.unit = statsMetric.title.lowercased()
         chart.data = Stats.shared.series(span: statsSpan, grouping: statsGrouping, metric: statsMetric)
         let sum = Stats.shared.summary(span: statsSpan, metric: statsMetric)
         func picker(_ items: [String], _ sel: Int, _ f: @escaping (Int) -> Void) -> NSPopUpButton {

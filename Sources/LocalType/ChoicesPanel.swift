@@ -59,7 +59,10 @@ final class ChoicesPanel {
             if origin.y < screen.visibleFrame.minY { origin.y = anchor.maxY + 4 }   // no room below: show above
         }
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        guard !panel.isVisible else { return }
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; panel.animator().alphaValue = 1 }
     }
 
     func hide() { panel.orderOut(nil); items = [] }
