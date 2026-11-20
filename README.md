@@ -19,6 +19,10 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
   optional local writing history for personalization, battery pausing, remappable shortcuts, local statistics
 - No accounts, no analytics, nothing sent anywhere
 
+## Download
+
+Get `LocalType-<version>.zip` from [Releases](https://github.com/ramirobuisan/localtype/releases), unzip it and move LocalType.app to Applications. The app isn't notarized, so the first time macOS blocks it: open System Settings → Privacy & Security and click "Open Anyway". The setup window then walks you through permissions and the model.
+
 ## Build
 
 Requires macOS 14+, Apple Silicon, Swift 5.9+ (Command Line Tools are enough).

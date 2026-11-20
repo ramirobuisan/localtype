@@ -6,4 +6,6 @@ TAG="${1:-b11254}"
 mkdir -p Vendor && cd Vendor
 curl -L -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-xcframework.zip"
 unzip -q -o llama.zip && rm llama.zip
+# llama.cpp is MIT-licensed: its license must ship with the app.
+curl -sL -o LICENSE-llama.cpp "https://raw.githubusercontent.com/ggml-org/llama.cpp/$TAG/LICENSE"
 echo "Fetched llama.cpp $TAG into Vendor/build-apple/llama.xcframework"
