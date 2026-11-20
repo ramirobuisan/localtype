@@ -19,6 +19,8 @@ struct FieldContext {
     let domain: String?
     let caretIndex: Int
     let style: TextStyle?
+    /// Text follows the caret on the same line (only with "complete inside existing text").
+    let hasTextAfter: Bool
 
     /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
     var caretPoint: CGPoint {
@@ -88,7 +90,8 @@ enum AX {
         let app = NSRunningApplication(processIdentifier: pid)
         return FieldContext(element: el, prefix: String(prefix.suffix(1500)), caretRect: rect, lineHeight: h,
                             bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid, domain: webDomain(of: el),
-                            caretIndex: caret, style: textStyle(el, at: caret - 1))
+                            caretIndex: caret, style: textStyle(el, at: caret - 1),
+                            hasTextAfter: !restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }))
     }
 
     /// Host of the web page containing `el`: walks up to the AXWebArea and reads its URL (http/https only).
@@ -154,6 +157,50 @@ enum AX {
         let pid = app.processIdentifier
         guard pid != ProcessInfo.processInfo.processIdentifier, accessibilityRequested.insert(pid).inserted else { return }
         AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+
+    /// Frame (AX coordinates) of an element if it's an editable text field LocalType could work in.
+    static func editableTextFrame(_ el: AXUIElement) -> CGRect? {
+        let role: String? = attr(el, kAXRoleAttribute), subrole: String? = attr(el, kAXSubroleAttribute)
+        guard role == kAXTextFieldRole || role == kAXTextAreaRole || role == kAXComboBoxRole,
+              subrole != kAXSecureTextFieldSubrole, subrole != "AXSearchField" else { return nil }
+        var editable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &editable) == .success, !editable.boolValue { return nil }
+        guard let pv: AXValue = attr(el, kAXPositionAttribute), let sv: AXValue = attr(el, kAXSizeAttribute) else { return nil }
+        var p = CGPoint.zero, s = CGSize.zero
+        AXValueGetValue(pv, .cgPoint, &p); AXValueGetValue(sv, .cgSize, &s)
+        return CGRect(origin: p, size: s)
+    }
+
+    struct Selection {
+        let element: AXUIElement
+        let text: String
+        let rect: NSRect       // Cocoa coordinates
+        let before: String     // context around it, for the model
+        let after: String
+    }
+
+    /// A short selection (a word or phrase, up to 4 words) in an editable text field, for synonyms.
+    static func readSelection() -> Selection? {
+        guard let el = focusedElement() else { return nil }
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        guard pid != ProcessInfo.processInfo.processIdentifier else { return nil }
+        let role: String? = attr(el, kAXRoleAttribute), subrole: String? = attr(el, kAXSubroleAttribute)
+        guard role == kAXTextFieldRole || role == kAXTextAreaRole || role == kAXComboBoxRole,
+              subrole != kAXSecureTextFieldSubrole, subrole != "AXSearchField",
+              let value: String = attr(el, kAXValueAttribute), let rv: AXValue = attr(el, kAXSelectedTextRangeAttribute) else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rv, .cfRange, &range), range.length > 0, range.length <= 40 else { return nil }
+        let ns = value as NSString
+        guard range.location + range.length <= ns.length else { return nil }
+        let text = ns.substring(with: NSRange(location: range.location, length: range.length)).trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !text.contains("\n"), text.split(separator: " ").count <= 4, text.contains(where: \.isLetter),
+              let rect = screenRect(el, location: range.location, length: range.length) else { return nil }
+        let beforeStart = max(0, range.location - 200), afterEnd = min(ns.length, range.location + range.length + 120)
+        return Selection(element: el, text: text, rect: rect,
+                         before: ns.substring(with: NSRange(location: beforeStart, length: range.location - beforeStart)),
+                         after: ns.substring(with: NSRange(location: range.location + range.length, length: afterEnd - range.location - range.length)))
     }
 
     /// The focused element of a given app (works while our own menu is open).

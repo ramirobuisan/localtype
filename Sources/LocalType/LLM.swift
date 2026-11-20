@@ -14,6 +14,59 @@ final class LLM {
         LlamaEngine.shared.cancel()
     }
 
+    // MARK: Lists (Labs: alternative words, synonyms)
+
+    private var listTask: URLSessionDataTask?
+    /// Lists need a chat model; the built-in engine only continues text.
+    static var supportsLists: Bool { Settings.backend != "embedded" }
+
+    func cancelList() { listTask?.cancel(); listTask = nil }
+
+    /// Several short options from a chat model, one per line in its reply.
+    func list(system: String, user: String, count: Int, completion: @escaping ([String]) -> Void) {
+        cancelList()
+        let messages = [["role": "system", "content": system], ["role": "user", "content": user]]
+        let url: URL?, body: [String: Any]
+        switch Settings.backend {
+        case "mlxserve":
+            url = URL(string: Settings.mlxEndpoint + "/v1/chat/completions")
+            body = ["model": Settings.batteryModelNow ?? Settings.mlxModel, "messages": messages, "max_tokens": 80,
+                    "temperature": 0.8, "stream": false, "chat_template_kwargs": ["enable_thinking": false]]
+        case "ollama":
+            url = URL(string: Settings.endpoint + "/api/chat")
+            body = ["model": Settings.batteryModelNow ?? Settings.model, "messages": messages, "stream": false,
+                    "options": ["temperature": 0.8, "num_predict": 80]]
+        default:
+            return completion([])
+        }
+        guard let url else { return completion([]) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        listTask = session.dataTask(with: req) { data, _, error in
+            guard error == nil, let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return completion([]) }
+            let text = (((obj["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String)
+                ?? ((obj["message"] as? [String: Any])?["content"] as? String) ?? ""
+            completion(LLM.parseList(text, count: count))
+        }
+        listTask?.resume()
+    }
+
+    /// One option per line; drops numbering, bullets, quotes, blanks and duplicates.
+    static func parseList(_ text: String, count: Int) -> [String] {
+        var seen = Set<String>(), out: [String] = []
+        for raw in text.split(whereSeparator: \.isNewline) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            if let r = line.range(of: #"^(\d{1,2}[.)]|[-*•])\s+"#, options: .regularExpression) { line.removeSubrange(r) }
+            line = line.trimmingCharacters(in: CharacterSet(charactersIn: " \"'“”‘’`‸"))
+            guard !line.isEmpty, line.count <= 40, seen.insert(line.lowercased()).inserted else { continue }
+            out.append(line)
+            if out.count == count { break }
+        }
+        return out
+    }
+
     func complete(prefix: String, appName: String?, screen: String? = nil, completion: @escaping (String?) -> Void) {
         cancel()
         // Raw mode has no system prompt, so style/context goes in as a short bracketed header.

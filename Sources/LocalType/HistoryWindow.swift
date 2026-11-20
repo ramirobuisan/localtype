@@ -50,7 +50,7 @@ final class HistoryWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NS
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 11)
         let note = NSTextField(wrappingLabelWithString:
-            "Stored only on this Mac (~/Library/Application Support/LocalType/history.json, readable only by you). Used to make suggestions sound like you.")
+            "Encrypted and stored only on this Mac (key in your Keychain). Used to make suggestions sound like you.")
         note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
         let top = NSStackView(views: [search, NSView(), countLabel])
         let bottom = NSStackView(views: [delSel, delAll, NSView()])

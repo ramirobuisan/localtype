@@ -24,9 +24,10 @@ private final class FlippedView: NSView { override var isFlipped: Bool { true } 
 final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     static let shared = SettingsWindow()
 
-    private let pages = ["Setup", "General", "Context", "Personalization", "Emoji", "Shortcuts", "Battery", "App Settings", "Statistics"]
+    private let pages = ["Setup", "General", "Context", "Personalization", "Emoji", "Shortcuts", "Battery", "App Settings",
+                         "Labs", "Statistics", "About"]
     private let symbols = ["checkmark.seal", "gearshape", "text.viewfinder", "wand.and.stars", "face.smiling", "command", "battery.100",
-                           "slider.horizontal.3", "chart.bar"]
+                           "slider.horizontal.3", "flask", "chart.bar", "info.circle"]
 
     private var window: NSWindow?
     private let sidebar = NSTableView()
@@ -36,7 +37,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private let lengths: [(String, Int)] = [("Current word only", 0), ("Short (~1 – 2 words)", 6), ("Medium (~2 – 4 words)", 12),
                                             ("Long (a phrase)", 32), ("Extra long (a sentence)", 64)]
 
-    func show(page: String) { show(page: pages.firstIndex(of: page) ?? 0) }
+    /// By name, case-insensitive ("statistics", "App Settings", "app-settings").
+    func show(page: String) {
+        let key = page.lowercased().replacingOccurrences(of: "-", with: " ")
+        show(page: pages.firstIndex { $0.lowercased() == key } ?? 1)
+    }
 
     /// Rebuilds the visible page (after a setting changes what it shows).
     private func reload() { select(max(0, sidebar.selectedRow)) }
@@ -101,6 +106,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         var sections: [NSView]
         switch pages[i] {
         case "Setup": sections = setup()
+        case "Labs": sections = labs()
+        case "About": sections = about()
         case "Emoji": sections = emojiPage()
         case "General": sections = general()
         case "Context": sections = context()
@@ -303,6 +310,138 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         ]
     }
 
+    private func about() -> [NSView] {
+        let icon = NSImageView(image: NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = .init(pointSize: 34, weight: .regular)
+        let name = NSTextField(labelWithString: "LocalType \(Updates.current)")
+        name.font = .systemFont(ofSize: 20, weight: .semibold)
+        let sub = NSTextField(wrappingLabelWithString: "Build \(Updates.build). On-device autocomplete for any Mac app. An independent project, not affiliated with Cotypist.")
+        sub.textColor = .secondaryLabelColor
+        let texts = NSStackView(views: [name, sub]); texts.orientation = .vertical; texts.alignment = .leading; texts.spacing = 4
+        let header = NSStackView(views: [icon, texts]); header.spacing = 14
+        header.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+
+        let status = NSTextField(wrappingLabelWithString: Settings.lastUpdateCheck == .distantPast ? "Not checked yet."
+            : "Last checked \(DateFormatter.localizedString(from: Settings.lastUpdateCheck, dateStyle: .medium, timeStyle: .short)).")
+        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
+        let checkNow = NSButton(title: "Check Now", target: nil, action: nil)
+        checkNow.bezelStyle = .rounded
+        checkNow.target = action { [weak checkNow] _ in
+            checkNow?.isEnabled = false
+            status.stringValue = "Checking…"
+            Updates.check { outcome in
+                checkNow?.isEnabled = true
+                switch outcome {
+                case .upToDate: status.stringValue = "LocalType \(Updates.current) is the latest version."
+                case .failed(let why): status.stringValue = "Couldn't check: \(why)"
+                case .available(let r):
+                    status.stringValue = "LocalType \(r.version) is available."
+                    let a = NSAlert()
+                    a.messageText = "LocalType \(r.version) is available"
+                    a.informativeText = "You have \(Updates.current). Open the release page to download it?"
+                    a.addButton(withTitle: "Open Release Page"); a.addButton(withTitle: "Later")
+                    if a.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(r.url) }
+                }
+            }
+        }
+        checkNow.action = #selector(Trampoline.fire(_:))
+        let checkRow = NSStackView(views: [status, NSView(), checkNow])
+        checkRow.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+
+        func credit(_ title: String, _ detail: String, _ url: String) -> NSView {
+            button(title, detail, "Website") { NSWorkspace.shared.open(URL(string: url)!) }
+        }
+        return [
+            section(nil, [header]),
+            section("Updates", [
+                checkRow,
+                toggle("Check for updates automatically", "Looks for a new release on GitHub once a day. LocalType only tells you; it never installs anything by itself.",
+                       get: { Settings.autoCheckUpdates }, set: { Settings.autoCheckUpdates = $0 }),
+                button("Source code", "The project, its issues and its releases.", "Open GitHub") { NSWorkspace.shared.open(Updates.repoURL) },
+            ]),
+            section("Third-Party Acknowledgments", [
+                credit("llama.cpp", "Built-in engine. MIT License, by the ggml authors.", "https://github.com/ggml-org/llama.cpp"),
+                row("Models", "Each model has its own license: Gemma under the Gemma Terms of Use (Gemma 4: Apache 2.0), Qwen and others under Apache 2.0 or their own terms.", nil),
+                row("MLX-Serve", "A separate app that LocalType talks to on this Mac; not bundled.", nil),
+            ]),
+        ]
+    }
+
+    private func labs() -> [NSView] {
+        let chatNote = LLM.supportsLists ? nil
+            : "Needs MLX-Serve or Ollama (Models…): the built-in engine only continues text."
+        let syncStatus = NSTextField(wrappingLabelWithString: "")
+        syncStatus.font = .systemFont(ofSize: 11)
+        syncStatus.textColor = .secondaryLabelColor
+        func describe(_ r: Sync.Result?) {
+            if case .failed(let why)? = r { syncStatus.stringValue = why; syncStatus.textColor = .systemOrange; return }
+            syncStatus.textColor = .secondaryLabelColor
+            if !Sync.available { syncStatus.stringValue = "iCloud Drive isn't turned on for this Mac."; return }
+            if Vault.syncKey == nil { syncStatus.stringValue = "No sync passphrase set yet."; return }
+            var text = Sync.lastSync.map { "Last synced \(DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .short))." } ?? "Not synced yet."
+            if case .ok(let added, let macs)? = r { text += " \(macs) Mac\(macs == 1 ? "" : "s"); \(added) change\(added == 1 ? "" : "s") merged." }
+            syncStatus.stringValue = text
+        }
+        describe(nil)
+        let syncNow = NSButton(title: "Sync Now", target: action { _ in Sync.runInBackground { describe($0) } }, action: #selector(Trampoline.fire(_:)))
+        syncNow.bezelStyle = .rounded
+        let statusRow = NSStackView(views: [syncStatus, NSView(), syncNow])
+        statusRow.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+
+        return [
+            section(nil, [
+                row("Experimental features", "They work well enough to use, but are less polished than the rest of LocalType.", nil),
+            ]),
+            section("Alternative Words", [
+                popup("Show alternative suggestions",
+                      "Offers other ways to continue under the cursor, either after a short pause on a suggestion or when you press the shortcut. Press 1–5 to insert one. Meant for the occasional wording hiccup, not for every word." + (chatNote.map { " " + $0 } ?? ""),
+                      items: ["Don't show", "After a short pause", "Only with the shortcut"],
+                      selected: Settings.alternativesMode, set: { Settings.alternativesMode = $0 }),
+                recorder("Show alternatives now", "Opens the list for the suggestion on screen.",
+                         get: { Settings.keyAlternatives }, set: { Settings.keyAlternatives = $0 }, indent: true),
+            ]),
+            section("Synonyms", [
+                popup("Suggest synonyms for selected words",
+                      "Select a word or short phrase to see synonyms that fit the sentence, either after a moment or when you press the shortcut. Press 1–5 to replace the selection." + (chatNote.map { " " + $0 } ?? ""),
+                      items: ["Off", "Automatically", "Only with the shortcut"],
+                      selected: Settings.synonymsMode, set: { Settings.synonymsMode = $0 }),
+                recorder("Show synonyms now", "Looks up synonyms for the current selection.",
+                         get: { Settings.keySynonyms }, set: { Settings.keySynonyms = $0 }, indent: true),
+            ]),
+            section("iCloud Sync", [
+                toggle("Sync your typing history between your Macs",
+                       "Your recorded writing (Personalization) is synced through iCloud Drive, end-to-end encrypted with a passphrase you choose and enter on each Mac. Apple only ever sees encrypted files; the passphrase isn't stored, only a key derived from it, in this Mac's Keychain. Deleting text on one Mac removes it on the others." + (Sync.available ? "" : " iCloud Drive must be on."),
+                       get: { Settings.syncHistory }, set: { on in
+                           Settings.syncHistory = on
+                           if on, !Settings.recordWriting {
+                               let a = NSAlert()
+                               a.messageText = "Typing history is off"
+                               a.informativeText = "There's nothing to sync until “Record your writing for personalization” is on (Personalization)."
+                               a.runModal()
+                           }
+                           Sync.update(); self.reload()
+                       }),
+                button("Sync passphrase", Vault.syncKey == nil ? "Use the same passphrase (8+ characters) on every Mac."
+                                                               : "Set. Changing it makes other Macs' files unreadable until you change it there too.",
+                       Vault.syncKey == nil ? "Set Passphrase…" : "Change…") {
+                    let a = NSAlert()
+                    a.messageText = "Sync passphrase"
+                    a.informativeText = "Enter the same passphrase on each Mac you want to sync. At least 8 characters. It can't be recovered: if you forget it, set a new one on every Mac."
+                    let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+                    a.accessoryView = field
+                    a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
+                    a.window.initialFirstResponder = field
+                    guard a.runModal() == .alertFirstButtonReturn else { return }
+                    if Sync.setPassphrase(field.stringValue) { Sync.update(); self.reload() }
+                    else {
+                        let e = NSAlert(); e.messageText = "Use at least 8 characters."; e.runModal()
+                    }
+                },
+                statusRow,
+            ]),
+        ]
+    }
+
     private func setup() -> [NSView] {
         let ax = AX.trusted(prompt: false)
         let screen = ScreenContext.permitted
@@ -365,6 +504,22 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             modelPopup.menu?.addItem(m)
         }
         store.list(fill)
+        let recommendation = NSTextField(wrappingLabelWithString: "")
+        recommendation.font = .systemFont(ofSize: 11)
+        recommendation.textColor = .secondaryLabelColor
+        let useRecommended = NSButton(title: "Use", target: nil, action: nil)
+        useRecommended.bezelStyle = .rounded
+        useRecommended.isHidden = true
+        store.list { list in
+            guard let rec = recommendedModel(list ?? [], backend: Settings.backend) else { return }
+            let active = store.isActive(rec)
+            recommendation.stringValue = active ? "★ You're using the model recommended for your Mac." : "★ Recommended for your Mac: \(rec)"
+            useRecommended.isHidden = active
+            useRecommended.target = self.action { _ in store.activeName = rec; self.reload() }
+            useRecommended.action = #selector(Trampoline.fire(_:))
+        }
+        let recRow = NSStackView(views: [recommendation, NSView(), useRecommended])
+        recRow.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 10, right: 14)
         modelPopup.target = action { [weak modelPopup] _ in
             guard let p = modelPopup, let title = p.titleOfSelectedItem else { return }
             if title == "Manage models…" { ModelsWindow.shared.show(); return }
@@ -375,6 +530,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return [
             section(nil, [
                 toggle("Launch automatically at login", nil, get: { Settings.launchAtLogin }, set: { Settings.launchAtLogin = $0 }),
+                toggle("Show accessory button",
+                       "A small floating button at the corner of the text field you're typing in. It opens LocalType's menu right there: turn completions off for this app or website, open Settings, and more.",
+                       get: { Settings.showAccessoryButton }, set: { Settings.showAccessoryButton = $0 }),
                 toggle("Show menu bar icon", "Display the LocalType icon in the menu bar. If hidden, reopen the app to get back here.",
                        get: { Settings.showMenuBarIcon }, set: { Settings.showMenuBarIcon = $0 }),
             ]),
@@ -388,6 +546,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 row("AI model", Settings.backend == "embedded" ? "Built-in engine — runs entirely inside the app."
                     : Settings.backend == "mlxserve" ? "MLX-Serve at \(Settings.mlxEndpoint). Smaller models answer faster."
                     : "Using Ollama at \(Settings.endpoint).", modelPopup),
+                recRow,
                 button("Model files", "Open the folder containing downloaded models.", "Reveal in Finder") {
                     NSWorkspace.shared.open(GGUFStore.directory)
                 },
@@ -442,6 +601,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                         })
                     : row("Tip", "Turn it off in apps with sensitive content from App Settings, or with the per-app shortcut.", nil, indent: true),
             ]),
+            section("Appearance", [
+                toggle("Use screenshots to improve suggestion appearance",
+                       "Takes a tiny screenshot next to the cursor to match the field's background: readable contrast on any page, and a solid backing when a suggestion has to sit over text after the cursor. May briefly show the Screen Recording indicator in the menu bar.",
+                       get: { Settings.matchAppearance }, set: { Settings.matchAppearance = $0 }),
+            ]),
             section("Clipboard Settings", [
                 toggle("Use clipboard for context",
                        "When enabled, the first 400 characters of your clipboard text are added to the prompt so completions can reflect what you're working with. It's processed locally and never sent anywhere.",
@@ -483,7 +647,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return [
             section("Typing History", [
                 toggle("Record your writing for personalization",
-                       "LocalType can record sentences you write in fields where it suggests text, so completions can echo your own words and phrases. Recorded text is stored only on this Mac (~/Library/Application Support/LocalType/history.json, readable only by you, not encrypted) and is never sent anywhere. Don't enable this if you work with sensitive information.",
+                       "LocalType can record sentences you write in fields where it suggests text, so completions can echo your own words and phrases. Recorded text is encrypted and stored only on this Mac (the key is in your Keychain); nothing is sent anywhere unless you turn on iCloud sync in Labs.",
                        get: { Settings.recordWriting }, set: { Settings.recordWriting = $0 }),
                 toggle("Record text even when you accept no suggestion",
                        "When disabled, LocalType records only text where you accepted at least one completion.",

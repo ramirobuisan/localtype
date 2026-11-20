@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let models = NSMenuItem(title: "Models…", action: #selector(openModels), keyEquivalent: "m")
     private let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: "")
+    private let update = NSMenuItem(title: "", action: #selector(openUpdate), keyEquivalent: "")
     private var permissionTimer: Timer?
     private var frontmostID: String?
 
@@ -22,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(statusLine)
         m.addItem(.separator())
         for i in [toggle, perApp, perSite, models, settings, setup] { i.target = self; m.addItem(i) }
+        update.target = self
+        update.isHidden = true
+        m.addItem(update)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = m
@@ -30,12 +34,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: .settingsChanged, object: nil, queue: .main) { [weak self] _ in
             if !Settings.enabled { Controller.shared.dismiss() }
             self?.refresh()
+            AccessoryButton.shared.update()
         }
+        AccessoryButton.shared.openMenu = { [weak self] point in
+            guard let menu = self?.item.menu else { return }
+            menu.popUp(positioning: nil, at: point, in: nil)
+        }
+        AccessoryButton.shared.update()
         ModelsWindow.shared.onChange = { [weak self] in self?.checkModelStatusOnly() }
         Controller.shared.onStatus = { [weak self] s in self?.statusLine.title = s }
         let firstRun = !Settings.onboardingDone || CommandLine.arguments.contains("--setup")
+        Sync.update()
         startWhenTrusted(prompt: !firstRun)
-        ScreenContext.shared.prewarm()   // the setup window has its own "Grant Access" step
+        ScreenContext.shared.prewarm()
+        Updates.checkInBackgroundIfDue { [weak self] in self?.refreshUpdateItem() }   // the setup window has its own "Grant Access" step
         if firstRun { OnboardingWindow.shared.show() }
         if let i = CommandLine.arguments.firstIndex(of: "--settings") {
             let args = CommandLine.arguments
@@ -105,6 +117,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Controller.shared.dismiss()
     }
 
+    /// localtype://settings/<page>, localtype://setup, localtype://models, localtype://history, localtype://toggle
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "localtype" {
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            switch url.host?.lowercased() {
+            case "setup": OnboardingWindow.shared.show()
+            case "models": ModelsWindow.shared.show()
+            case "history": HistoryWindow.shared.show()
+            case "toggle": Settings.enabled.toggle()
+            default: SettingsWindow.shared.show(page: path.isEmpty ? "General" : path.removingPercentEncoding ?? path)
+            }
+        }
+    }
+
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         SettingsWindow.shared.show(page: "General")
         return true
@@ -158,4 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() { SettingsWindow.shared.show(page: "General") }
     @objc private func openSetup() { OnboardingWindow.shared.show() }
+
+    private func refreshUpdateItem() {
+        update.isHidden = Updates.available == nil
+        if let r = Updates.available { update.title = "LocalType \(r.version) Available…" }
+    }
+
+    @objc private func openUpdate() { if let r = Updates.available { NSWorkspace.shared.open(r.url) } }
 }

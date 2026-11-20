@@ -71,6 +71,71 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-fie
     RunLoop.main.run()
 }
 
+// Sync check: LocalType --selftest-sync — two simulated Macs in a scratch folder (run with LOCALTYPE_SUPPORT_DIR set).
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-sync" {
+    guard ProcessInfo.processInfo.environment["LOCALTYPE_SUPPORT_DIR"] != nil else { print("set LOCALTYPE_SUPPORT_DIR"); exit(2) }
+    let cloud = AppPaths.support.appendingPathComponent("icloud", isDirectory: true)
+    Sync.override = cloud
+    try? FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+    var ok = true
+    func check(_ name: String, _ cond: Bool) { print((cond ? "PASS " : "FAIL ") + name); ok = ok && cond }
+    let t0 = Date()
+    let key = Sync.deriveKey("correct horse battery")!
+    check("key derivation is deterministic (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)", Sync.deriveKey("correct horse battery")! == key)
+    History.shared.add("This sentence was written on Mac A and stays.", app: "com.apple.TextEdit")
+    History.shared.add("This one from Mac A gets deleted on Mac B later.", app: "com.apple.TextEdit")
+    let doomed = History.fingerprint("This one from Mac A gets deleted on Mac B later.")
+    // Mac B: one new sentence, and a deletion of A's second sentence.
+    let b = History.Store(entries: [.init(text: "A sentence that was typed on Mac B instead.", date: Date(), app: "com.tinyspeck.slackmacgap")],
+                          deleted: [doomed: Date().addingTimeInterval(60)])
+    try? Vault.seal(try! JSONEncoder().encode(b), with: key)!.write(to: cloud.appendingPathComponent("history-macb.lthist"))
+    // Mac C uses another passphrase: must be skipped and reported, not crash or corrupt anything.
+    let c = History.Store(entries: [.init(text: "Mac C has a different passphrase entirely.", date: Date(), app: nil)], deleted: [:])
+    try? Vault.seal(try! JSONEncoder().encode(c), with: Sync.deriveKey("another passphrase")!)!.write(to: cloud.appendingPathComponent("history-macc.lthist"))
+    let result = Sync.run(key: key)
+    if case .failed(let why) = result { print("result: \(why)") } else { print("result: \(result)") }
+    let texts = Set(History.shared.entries.map(\.text))
+    check("kept local sentence", texts.contains("This sentence was written on Mac A and stays."))
+    check("merged Mac B's sentence", texts.contains("A sentence that was typed on Mac B instead."))
+    check("applied Mac B's deletion", !texts.contains("This one from Mac A gets deleted on Mac B later."))
+    check("skipped the other passphrase", !texts.contains("Mac C has a different passphrase entirely."))
+    if case .failed(let why) = result { check("reported the other passphrase", why.contains("different sync passphrase")) } else { check("reported the other passphrase", false) }
+    let mine = cloud.appendingPathComponent("history-\(Sync.deviceID).lthist")
+    let raw = (try? Data(contentsOf: mine)) ?? Data()
+    check("own file is encrypted (no plain text inside)", !raw.isEmpty && !(String(decoding: raw, as: UTF8.self).contains("Mac A")))
+    let back = Vault.open(raw, with: key).flatMap { try? JSONDecoder().decode(History.Store.self, from: $0) }
+    check("own file decrypts with the key and carries the deletion", back?.deleted[doomed] != nil && back?.entries.count == 2)
+    let local = (try? Data(contentsOf: AppPaths.support.appendingPathComponent("history.enc"))) ?? Data()
+    check("local history file is encrypted", !local.isEmpty && !String(decoding: local, as: UTF8.self).contains("Mac B"))
+    print(ok ? "ALL PASSED" : "SOME FAILED")
+    exit(ok ? 0 : 1)
+}
+
+// Labs check: LocalType --selftest-labs — alternatives and synonyms from the configured chat model.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-labs" {
+    let llm = LLM()
+    MLXServeStore.shared.prepare { _ in
+        let prefix = "Thanks for the update. I think we should"
+        llm.list(system: Controller.alternativesPrompt, user: "[Writing in Mail]\n\n" + prefix + "‸", count: 5) { alts in
+            print("alternatives after \"\(prefix)\": " + alts.map { MLXServeCompletion.join($0, after: prefix).debugDescription }.joined(separator: ", "))
+            let user = "Passage: …The results were «good», but the second test took much longer than expected.…\n\nReplace: good"
+            llm.list(system: Controller.synonymsPrompt, user: user, count: 5) { syns in
+                print("synonyms for «good»: " + syns.joined(separator: ", "))
+                print("case matching: \(Controller.matchCase("excellent", to: "Good")) / \(Controller.matchCase("great", to: "GOOD"))")
+                exit(0)
+            }
+        }
+    }
+    RunLoop.main.run()
+}
+
+// Update check: LocalType --selftest-update
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-update" {
+    print("current: \(Updates.current); 0.10.0 > 0.9.2: \(Updates.isNewer("0.10.0", than: "0.9.2")); 0.3.0 > 0.3.0: \(Updates.isNewer("0.3.0", than: "0.3.0"))")
+    Updates.check { outcome in print("check: \(outcome)"); exit(0) }
+    RunLoop.main.run()
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []

@@ -4,6 +4,8 @@ set -e
 cd "$(dirname "$0")"
 swift build -c release
 APP=LocalType.app
+VERSION=$(cat VERSION)
+BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS"
 cp .build/release/LocalType "$APP/Contents/MacOS/"
 mkdir -p "$APP/Contents/Frameworks"
@@ -16,7 +18,12 @@ cat > "$APP/Contents/Info.plist" <<PL
 <key>CFBundleName</key><string>LocalType</string>
 <key>CFBundleExecutable</key><string>LocalType</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
+<key>CFBundleVersion</key><string>$BUILD</string>
+<key>CFBundleURLTypes</key><array><dict>
+  <key>CFBundleURLName</key><string>LocalType settings</string>
+  <key>CFBundleURLSchemes</key><array><string>localtype</string></array>
+</dict></array>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSAppleEventsUsageDescription</key><string>Needed to insert suggestions.</string>

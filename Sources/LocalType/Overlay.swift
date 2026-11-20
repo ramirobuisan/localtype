@@ -12,6 +12,11 @@ final class Overlay {
 
     /// Font and color of the field the suggestion belongs to (set before each show).
     var fieldStyle: TextStyle?
+    /// The field's background next to the caret, sampled from the screen (may arrive after the suggestion).
+    var backdrop: NSColor?
+    /// The suggestion sits over existing text: draw it on a solid backing so both stay readable.
+    var coverText = false
+    private var last: (text: String, caret: NSRect, isFix: Bool, typo: NSRect?)?
 
     init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -44,16 +49,25 @@ final class Overlay {
         return .systemFont(ofSize: max(11, min(caret.height * 0.8, 20)))
     }
 
-    /// Ghost-text color: the field's text color, faded; falls back to the system's secondary label color.
+    /// Ghost-text color: the field's text color, faded. Without one, a gray that contrasts with the sampled
+    /// background (a light page in dark mode would otherwise get light-gray text on white).
     private var ghostColor: NSColor {
-        guard inline, let c = fieldStyle?.color?.usingColorSpace(.sRGB), c.alphaComponent > 0.2 else { return .secondaryLabelColor }
-        return c.withAlphaComponent(0.42)
+        if inline, let c = fieldStyle?.color?.usingColorSpace(.sRGB), c.alphaComponent > 0.2 { return c.withAlphaComponent(0.42) }
+        if inline, let bg = backdrop { return Backdrop.luminance(bg) > 0.55 ? NSColor(white: 0, alpha: 0.4) : NSColor(white: 1, alpha: 0.45) }
+        return .secondaryLabelColor
+    }
+
+    /// Draw again with what's known now (the background sample usually lands just after the suggestion).
+    func refresh() {
+        guard panel.isVisible, let l = last else { return }
+        show(l.text, at: l.caret, isFix: l.isFix, typo: l.typo)
     }
 
     private var acceptHint: String { (Settings.keyAcceptWord ?? Settings.keyAcceptAll)?.display ?? "⇥" }
 
     /// A suggestion, or a typo fix. For a fix, `typo` is the screen rect of the misspelled word to strike through.
     func show(_ text: String, at caret: NSRect, isFix: Bool = false, typo: NSRect? = nil) {
+        last = (text, caret, isFix, typo)
         let f = font(caret)
         if isFix {
             let s = inline && typo != nil ? " " + text : "✎ " + text
@@ -79,12 +93,15 @@ final class Overlay {
                 .font: small, .foregroundColor: NSColor.tertiaryLabelColor]))
         }
         // Emoji always get the bubble: they're a picker, not ghost text.
+        last = nil
         present(s, hint: others.isEmpty ? acceptHint : acceptHint + " · ↓ next", at: caret, forceBubble: true)
     }
 
     private func present(_ text: NSAttributedString, hint hintText: String, at caret: NSRect,
                          strikeThrough typo: NSRect? = nil, forceBubble: Bool = false) {
-        let useBubble = !inline || forceBubble
+        // Over existing text without a known background, fall back to the bubble so it stays readable.
+        let useBubble = !inline || forceBubble || (coverText && backdrop == nil)
+        let solid = !useBubble && coverText && backdrop != nil
         label.attributedStringValue = text
         hint.stringValue = hintText
         label.sizeToFit()
@@ -99,6 +116,8 @@ final class Overlay {
         label.frame.origin = NSPoint(x: lead + padX - (useBubble ? 0 : inset), y: (h - label.frame.height) / 2)
         hint.frame.origin = NSPoint(x: label.frame.maxX + gap - (useBubble ? 0 : inset), y: (h - hint.frame.height) / 2)
         bubble.isHidden = !useBubble
+        container.wantsLayer = true
+        container.layer?.backgroundColor = solid ? backdrop?.cgColor : nil
         bubble.frame = NSRect(x: lead, y: 0, width: w - lead, height: h)
         if let typo {
             strike.isHidden = false
@@ -115,5 +134,5 @@ final class Overlay {
         panel.orderFrontRegardless()
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() { panel.orderOut(nil); last = nil }
 }

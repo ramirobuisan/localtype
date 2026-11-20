@@ -9,7 +9,7 @@ enum Settings {
     private static let d = UserDefaults.standard
 
     static var enabled: Bool {
-        get { d.object(forKey: "enabled") as? Bool ?? true }
+        get { (d.object(forKey: "enabled") == nil ? true : d.bool(forKey: "enabled")) }
         set { d.set(newValue, forKey: "enabled"); notify() }
     }
     static var model: String {
@@ -86,13 +86,18 @@ enum Settings {
         get { d.integer(forKey: "suggestionStyle") }
         set { d.set(newValue, forKey: "suggestionStyle") }
     }
+    /// Floating button at the corner of the focused text field that opens LocalType's menu.
+    static var showAccessoryButton: Bool {
+        get { d.bool(forKey: "showAccessoryButton") }
+        set { d.set(newValue, forKey: "showAccessoryButton"); notify() }
+    }
     static var showMenuBarIcon: Bool {
-        get { d.object(forKey: "showMenuBarIcon") as? Bool ?? true }
+        get { (d.object(forKey: "showMenuBarIcon") == nil ? true : d.bool(forKey: "showMenuBarIcon")) }
         set { d.set(newValue, forKey: "showMenuBarIcon"); notify() }
     }
     /// When false, completions are off everywhere except apps in `enabledApps`.
     static var enabledByDefault: Bool {
-        get { d.object(forKey: "enabledByDefault") as? Bool ?? true }
+        get { (d.object(forKey: "enabledByDefault") == nil ? true : d.bool(forKey: "enabledByDefault")) }
         set { d.set(newValue, forKey: "enabledByDefault"); notify() }
     }
     /// Per-app rules: bundle ID → completions on/off. Apps without a rule follow `enabledByDefault`.
@@ -129,23 +134,23 @@ enum Settings {
     }
     /// Suggest even when there is text after the caret on the same line.
     static var completeInside: Bool {
-        get { d.object(forKey: "completeInside") as? Bool ?? false }
+        get { (d.object(forKey: "completeInside") == nil ? false : d.bool(forKey: "completeInside")) }
         set { d.set(newValue, forKey: "completeInside") }
     }
     static var typoGuard: Bool {
-        get { d.object(forKey: "typoGuard") as? Bool ?? true }
+        get { (d.object(forKey: "typoGuard") == nil ? true : d.bool(forKey: "typoGuard")) }
         set { d.set(newValue, forKey: "typoGuard") }
     }
     static var suggestFixes: Bool {
-        get { d.object(forKey: "suggestFixes") as? Bool ?? true }
+        get { (d.object(forKey: "suggestFixes") == nil ? true : d.bool(forKey: "suggestFixes")) }
         set { d.set(newValue, forKey: "suggestFixes") }
     }
     static var pauseOnBattery: Bool {
-        get { d.object(forKey: "pauseOnBattery") as? Bool ?? false }
+        get { (d.object(forKey: "pauseOnBattery") == nil ? false : d.bool(forKey: "pauseOnBattery")) }
         set { d.set(newValue, forKey: "pauseOnBattery") }
     }
     static var pauseLowPower: Bool {
-        get { d.object(forKey: "pauseLowPower") as? Bool ?? true }
+        get { (d.object(forKey: "pauseLowPower") == nil ? true : d.bool(forKey: "pauseLowPower")) }
         set { d.set(newValue, forKey: "pauseLowPower") }
     }
     // Statistics (local only)
@@ -162,14 +167,35 @@ enum Settings {
         get { d.bool(forKey: "useScreen") }
         set { d.set(newValue, forKey: "useScreen") }
     }
+    /// Sample the field's background with a tiny screenshot so suggestions match it (needs Screen Recording).
+    static var matchAppearance: Bool {
+        get { (d.object(forKey: "matchAppearance") == nil ? true : d.bool(forKey: "matchAppearance")) }
+        set { d.set(newValue, forKey: "matchAppearance") }
+    }
+    // Labs
+    /// Alternative words for the current suggestion: 0 = off, 1 = after a short pause, 2 = only with the shortcut.
+    static var alternativesMode: Int {
+        get { d.integer(forKey: "alternativesMode") }
+        set { d.set(newValue, forKey: "alternativesMode") }
+    }
+    /// Synonyms for a selected word or phrase: 0 = off, 1 = automatically, 2 = only with the shortcut.
+    static var synonymsMode: Int {
+        get { d.integer(forKey: "synonymsMode") }
+        set { d.set(newValue, forKey: "synonymsMode") }
+    }
+    /// Sync the typing history between Macs through iCloud Drive (end-to-end encrypted with a passphrase).
+    static var syncHistory: Bool {
+        get { d.bool(forKey: "syncHistory") }
+        set { d.set(newValue, forKey: "syncHistory") }
+    }
     /// ":name" suggests an emoji.
     static var emojiCompletion: Bool {
-        get { d.object(forKey: "emojiCompletion") as? Bool ?? true }
+        get { (d.object(forKey: "emojiCompletion") == nil ? true : d.bool(forKey: "emojiCompletion")) }
         set { d.set(newValue, forKey: "emojiCompletion") }
     }
     /// Text emoticons like ":-)" or "<3" offer the matching emoji.
     static var emojiEmoticons: Bool {
-        get { d.object(forKey: "emojiEmoticons") as? Bool ?? true }
+        get { (d.object(forKey: "emojiEmoticons") == nil ? true : d.bool(forKey: "emojiEmoticons")) }
         set { d.set(newValue, forKey: "emojiEmoticons") }
     }
     /// 0 = neutral (yellow), 1…5 = light … dark.
@@ -192,6 +218,14 @@ enum Settings {
         get { d.dictionary(forKey: "emojiUsage") as? [String: Int] ?? [:] }
         set { d.set(newValue, forKey: "emojiUsage") }
     }
+    static var autoCheckUpdates: Bool {
+        get { (d.object(forKey: "autoCheckUpdates") == nil ? true : d.bool(forKey: "autoCheckUpdates")) }
+        set { d.set(newValue, forKey: "autoCheckUpdates") }
+    }
+    static var lastUpdateCheck: Date {
+        get { d.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast }
+        set { d.set(newValue, forKey: "lastUpdateCheck") }
+    }
     static var onboardingDone: Bool {
         get { d.bool(forKey: "onboardingDone") }
         set { d.set(newValue, forKey: "onboardingDone") }
@@ -205,7 +239,7 @@ enum Settings {
         set { d.set(newValue, forKey: "recordWriting") }
     }
     static var recordWithoutAccept: Bool {
-        get { d.object(forKey: "recordWithoutAccept") as? Bool ?? true }
+        get { (d.object(forKey: "recordWithoutAccept") == nil ? true : d.bool(forKey: "recordWithoutAccept")) }
         set { d.set(newValue, forKey: "recordWithoutAccept") }
     }
     /// 0 = off … 1 = max (how many of your own past sentences are shown to the model).
@@ -226,7 +260,7 @@ enum Settings {
     }
     /// true = Esc dismisses and pauses suggestions for a few seconds.
     static var escapePauses: Bool {
-        get { d.object(forKey: "escapePauses") as? Bool ?? true }
+        get { (d.object(forKey: "escapePauses") == nil ? true : d.bool(forKey: "escapePauses")) }
         set { d.set(newValue, forKey: "escapePauses") }
     }
     private static func shortcut(_ key: String, _ def: Shortcut?) -> Shortcut? {
@@ -249,6 +283,14 @@ enum Settings {
     static var keyToggleApp: Shortcut? {
         get { shortcut("keyToggleApp", nil) }
         set { setShortcut("keyToggleApp", newValue) }
+    }
+    static var keyAlternatives: Shortcut? {
+        get { shortcut("keyAlternatives", nil) }
+        set { setShortcut("keyAlternatives", newValue) }
+    }
+    static var keySynonyms: Shortcut? {
+        get { shortcut("keySynonyms", nil) }
+        set { setShortcut("keySynonyms", newValue) }
     }
     static var keyToggleGlobal: Shortcut? {
         get { shortcut("keyToggleGlobal", Shortcut(code: 8, flags: [.control, .option], label: "C")) }

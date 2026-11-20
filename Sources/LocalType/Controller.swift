@@ -32,6 +32,7 @@ final class Controller {
         }
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseUp.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
                                         options: .defaultTap, eventsOfInterest: mask,
@@ -53,6 +54,10 @@ final class Controller {
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker {
             return Unmanaged.passUnretained(event)
         }
+        if type == .leftMouseUp {   // a click or drag may have just selected a word (synonyms)
+            DispatchQueue.main.async { self.scheduleSelectionCheck() }
+            return Unmanaged.passUnretained(event)
+        }
         if type != .keyDown { dismiss(); return Unmanaged.passUnretained(event) }
 
         if ShortcutRecorder.isRecording { return Unmanaged.passUnretained(event) }
@@ -72,6 +77,27 @@ final class Controller {
         }
         if let k = Settings.keyForce, k.matches(code: code, cgFlags: cg) {
             DispatchQueue.main.async { self.dismiss(); self.trigger(force: true) }
+            return nil
+        }
+        // A numbered list (alternatives or synonyms) is open: 1–n picks, Esc closes just the list.
+        if choices.isVisible {
+            let digits: [Int64: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5]
+            if flags.isEmpty, let n = digits[code], n <= choices.items.count {
+                let pick = choices.items[n - 1]
+                DispatchQueue.main.async { self.applyChoice(pick) }
+                return nil
+            }
+            if code == 53 && flags.isEmpty {
+                DispatchQueue.main.async { self.closeChoices() }
+                return nil
+            }
+        }
+        if let k = Settings.keyAlternatives, k.matches(code: code, cgFlags: cg), suggestion != nil {
+            DispatchQueue.main.async { self.showAlternatives() }
+            return nil
+        }
+        if let k = Settings.keySynonyms, k.matches(code: code, cgFlags: cg) {
+            DispatchQueue.main.async { self.showSynonyms() }
             return nil
         }
         let isAcceptWord = Settings.keyAcceptWord?.matches(code: code, cgFlags: cg) == true
@@ -114,6 +140,9 @@ final class Controller {
         dismiss()
         // Ignore shortcuts and pure navigation keys; retrigger only on typing.
         let navKeys: Set<Int64> = [123, 124, 125, 126, 115, 119, 116, 121, 53, 48]
+        if flags.contains(.maskShift), [123, 124, 125, 126].contains(code) {   // ⇧-arrows extend a selection
+            DispatchQueue.main.async { self.scheduleSelectionCheck() }
+        }
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || navKeys.contains(code) {
             return Unmanaged.passUnretained(event)
         }
@@ -157,6 +186,17 @@ final class Controller {
         guard Date() >= pausedUntil || force else { return }
         guard let ctx = AX.readContext() else { return }
         overlay.fieldStyle = ctx.style
+        overlay.coverText = ctx.hasTextAfter
+        overlay.backdrop = nil
+        if Settings.matchAppearance {
+            // Strip to the right of the caret, where the suggestion will go; sampled while the model works.
+            let p = ctx.caretPoint
+            Backdrop.sample(CGRect(x: p.x + 1, y: p.y - ctx.lineHeight / 2, width: 160, height: ctx.lineHeight)) { [weak self] c in
+                guard let self, let c else { return }
+                self.overlay.backdrop = c
+                self.overlay.refresh()
+            }
+        }
         guard isAllowed(ctx.bundleID, domain: ctx.domain) else { return }
         lastPrefix = ctx.prefix
         lastApp = ctx.bundleID
@@ -216,6 +256,7 @@ final class Controller {
                 // Caret may have moved while we waited.
                 guard let now = AX.readContext(), now.prefix == ctx.prefix else { return }
                 self.suggestion = text
+                if Settings.alternativesMode == 1 { self.scheduleAlternatives(for: text) }
                 Settings.shown += 1
                 self.overlay.fieldStyle = now.style
                 self.overlay.show(text, at: now.caretRect)
@@ -241,7 +282,112 @@ final class Controller {
         return Spelling.isWord(tail + rest) ? rest : ""
     }
 
+    // MARK: Labs: alternative words and synonyms
+
+    static let alternativesPrompt = """
+            You suggest alternative ways to continue text that is being typed. Give 5 different continuations for the text \
+            at the marker ‸, each 1 to 3 words long and each starting with a different word. One per line: no numbering, \
+            no quotes, no explanations. Match the language and tone.
+            """
+    static let synonymsPrompt = """
+            You are a thesaurus. Give 5 words or short phrases that could replace the text marked with « » in the passage, \
+            with the same meaning and the same grammatical form (tense, number, gender). One per line: no numbering, no quotes, \
+            no explanations. Use the passage's language.
+            """
+
+    private let choices = ChoicesPanel()
+    private enum ChoiceKind { case alternatives, synonyms(String) }
+    private var choiceKind: ChoiceKind?
+    private var choiceTimer: DispatchWorkItem?
+    private let listLLM = LLM()
+
+    private func closeChoices() {
+        choiceTimer?.cancel()
+        listLLM.cancelList()
+        choices.hide()
+        choiceKind = nil
+    }
+
+    /// After a short pause on the same suggestion, offer other ways to continue.
+    private func scheduleAlternatives(for text: String) {
+        choiceTimer?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.suggestion == text else { return }
+            self.showAlternatives()
+        }
+        choiceTimer = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200), execute: w)
+    }
+
+    private func showAlternatives() {
+        guard LLM.supportsLists, let current = suggestion, emoji == nil, fixDelete == nil, let ctx = AX.readContext() else { return }
+        let system = Controller.alternativesPrompt
+        let user = "[Writing in \(ctx.appName ?? "an app")]\n\n" + ctx.prefix + "‸"
+        choiceKind = .alternatives
+        listLLM.list(system: system, user: user, count: 5) { [weak self] items in
+            DispatchQueue.main.async {
+                guard let self, self.suggestion == current, case .alternatives? = self.choiceKind else { return }
+                let options = items.map { MLXServeCompletion.join($0, after: ctx.prefix) }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                guard !options.isEmpty else { return }
+                self.choices.show(options, heading: "Other words", below: ctx.caretRect)
+            }
+        }
+    }
+
+    /// A selection may have just been made: look for one shortly (automatic synonyms only).
+    private func scheduleSelectionCheck() {
+        guard Settings.synonymsMode == 1, Settings.enabled else { return }
+        choiceTimer?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.showSynonyms() }
+        choiceTimer = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(700), execute: w)
+    }
+
+    private func showSynonyms() {
+        guard Settings.synonymsMode != 0, LLM.supportsLists, let sel = AX.readSelection() else { return }
+        var pid: pid_t = 0
+        AXUIElementGetPid(sel.element, &pid)
+        guard isAllowed(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, domain: AX.webDomain(of: sel.element)) else { return }
+        let system = Controller.synonymsPrompt
+        let user = "Passage: …\(sel.before)«\(sel.text)»\(sel.after)…\n\nReplace: \(sel.text)"
+        choiceKind = .synonyms(sel.text)
+        listLLM.list(system: system, user: user, count: 5) { [weak self] items in
+            DispatchQueue.main.async {
+                guard let self, case .synonyms(let original)? = self.choiceKind, original == sel.text else { return }
+                let options = items.filter { $0.caseInsensitiveCompare(sel.text) != .orderedSame }
+                guard !options.isEmpty, AX.readSelection()?.text == sel.text else { return }   // selection still there
+                self.choices.show(options.map { Controller.matchCase($0, to: sel.text) }, heading: "Synonyms", below: sel.rect)
+            }
+        }
+    }
+
+    /// "Big" → "Large", "BIG" → "LARGE".
+    static func matchCase(_ word: String, to original: String) -> String {
+        if original.count > 1, original == original.uppercased(), original != original.lowercased() { return word.uppercased() }
+        if let f = original.first, f.isUppercase { return word.prefix(1).uppercased() + word.dropFirst() }
+        return word
+    }
+
+    private func applyChoice(_ text: String) {
+        let kind = choiceKind
+        closeChoices()
+        switch kind {
+        case .alternatives?:
+            dismiss()
+            recordAccepted(text)
+            Settings.accepted += 1
+            type(text)
+            Stats.shared.record(text, app: lastApp)
+        case .synonyms(let original)?:
+            guard AX.readSelection()?.text == original else { return }   // typing replaces the still-selected text
+            type(text)
+        case nil:
+            break
+        }
+    }
+
     func dismiss() {
+        closeChoices()
         debounce?.cancel()
         generation += 1
         llm.cancel()

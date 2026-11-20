@@ -4,7 +4,9 @@ import Foundation
 enum AppPaths {
     static let support: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("LocalType", isDirectory: true)
+        // LOCALTYPE_SUPPORT_DIR lets self-tests use a scratch folder instead of the real data.
+        let dir = ProcessInfo.processInfo.environment["LOCALTYPE_SUPPORT_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? base.appendingPathComponent("LocalType", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

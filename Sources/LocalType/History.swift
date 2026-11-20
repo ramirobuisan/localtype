@@ -1,7 +1,10 @@
+import CryptoKit
 import Foundation
 
 /// Local-only record of sentences you wrote, used to bias suggestions toward your own phrasing.
-/// Stored as JSON in Application Support (file mode 600). Not encrypted.
+/// Stored encrypted (AES-GCM, key in the Keychain) in Application Support, file mode 600.
+extension Notification.Name { static let historyChanged = Notification.Name("LocalTypeHistoryChanged") }
+
 final class History {
     static let shared = History()
 
@@ -10,25 +13,74 @@ final class History {
         let date: Date
         let app: String?   // bundle ID it was written in (nil in data from older builds)
     }
+    /// What's stored (and synced): the entries, plus when each deleted text was deleted, so a deletion on one Mac
+    /// also removes the text on the others instead of being re-added by the next merge.
+    struct Store: Codable {
+        var entries: [Entry]
+        var deleted: [String: Date]
+    }
     private(set) var entries: [Entry] = []
-    private let url = AppPaths.support.appendingPathComponent("history.json")
+    private(set) var deleted: [String: Date] = [:]
+    var store: Store { Store(entries: entries, deleted: deleted) }
+
+    /// Short stable fingerprint of a text (tombstones never store the text itself).
+    static func fingerprint(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+    private let url = AppPaths.support.appendingPathComponent("history.enc")
+    private let legacyURL = AppPaths.support.appendingPathComponent("history.json")   // plain JSON, older builds
     private static let cap = 2000
 
     private init() {
-        if let d = try? Data(contentsOf: url), let e = try? JSONDecoder().decode([Entry].self, from: d) { entries = e }
+        if let sealed = try? Data(contentsOf: url), let d = Vault.open(sealed) {
+            if let s = try? JSONDecoder().decode(Store.self, from: d) { entries = s.entries; deleted = s.deleted }
+            else if let e = try? JSONDecoder().decode([Entry].self, from: d) { entries = e }   // before tombstones
+        } else if let d = try? Data(contentsOf: legacyURL), let e = try? JSONDecoder().decode([Entry].self, from: d) {
+            entries = e          // move an older plain-text history into the encrypted file
+            save()
+            if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: legacyURL) }
+        }
+    }
+
+    /// Merges other Macs' stores into this one (sync): union of entries, newest deletion per text wins over
+    /// older copies of it. Returns how many entries were added or removed.
+    @discardableResult
+    func merge(_ others: [Store]) -> Int {
+        var tomb = deleted
+        for o in others { tomb.merge(o.deleted) { max($0, $1) } }
+        var byText: [String: Entry] = [:]
+        for e in entries + others.flatMap(\.entries) {
+            if let old = byText[e.text], old.date <= e.date { continue }
+            byText[e.text] = e
+        }
+        let merged = byText.values.filter { e in tomb[History.fingerprint(e.text)].map { e.date > $0 } ?? true }
+            .sorted { $0.date < $1.date }.suffix(History.cap)
+        let changed = abs(merged.count - entries.count) + Set(merged.map(\.text)).symmetricDifference(entries.map(\.text)).count / 2
+        // Old tombstones aren't needed once every copy is gone; keep them 90 days.
+        let cutoff = Date().addingTimeInterval(-90 * 24 * 3600)
+        deleted = tomb.filter { $0.value > cutoff }
+        entries = Array(merged)
+        save(notify: false)   // a merge isn't a local change: don't schedule another sync
+        return changed
     }
 
     var count: Int { entries.count }
     func count(app: String) -> Int { entries.filter { $0.app == app }.count }
 
-    func deleteAll() { entries = []; save() }
-    func delete(app: String) { entries.removeAll { $0.app == app }; save() }
-    func delete(_ entry: Entry) { entries.removeAll { $0.text == entry.text && $0.date == entry.date }; save() }
+    private func tombstone(_ list: [Entry]) { let now = Date(); for e in list { deleted[History.fingerprint(e.text)] = now } }
+    func deleteAll() { tombstone(entries); entries = []; save() }
+    func delete(app: String) { tombstone(entries.filter { $0.app == app }); entries.removeAll { $0.app == app }; save() }
+    func delete(_ entry: Entry) {
+        tombstone([entry])
+        entries.removeAll { $0.text == entry.text && $0.date == entry.date }
+        save()
+    }
 
-    private func save() {
-        guard let d = try? JSONEncoder().encode(entries) else { return }
-        try? d.write(to: url, options: .atomic)
+    private func save(notify: Bool = true) {
+        guard let d = try? JSONEncoder().encode(store), let sealed = Vault.seal(d) else { return }
+        try? sealed.write(to: url, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        if notify { NotificationCenter.default.post(name: .historyChanged, object: nil) }
     }
 
     func add(_ text: String, app: String?) {
