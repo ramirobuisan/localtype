@@ -21,6 +21,8 @@ struct FieldContext {
     let style: TextStyle?
     /// Text follows the caret on the same line (only with "complete inside existing text").
     let hasTextAfter: Bool
+    /// Right edge (Cocoa x) of that following text, so a suggestion's backing can hide all of it.
+    let textAfterMaxX: CGFloat?
 
     /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
     var caretPoint: CGPoint {
@@ -91,7 +93,9 @@ enum AX {
         return FieldContext(element: el, prefix: String(prefix.suffix(1500)), caretRect: rect, lineHeight: h,
                             bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid, domain: webDomain(of: el),
                             caretIndex: caret, style: textStyle(el, at: caret - 1),
-                            hasTextAfter: !restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }))
+                            hasTextAfter: !restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }),
+                            textAfterMaxX: restOfLine.isEmpty ? nil
+                                : screenRect(el, location: caret, length: (String(restOfLine) as NSString).length)?.maxX)
     }
 
     /// Host of the web page containing `el`: walks up to the AXWebArea and reads its URL (http/https only).

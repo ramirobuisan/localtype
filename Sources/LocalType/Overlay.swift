@@ -16,6 +16,8 @@ final class Overlay {
     var backdrop: NSColor?
     /// The suggestion sits over existing text: draw it on a solid backing so both stay readable.
     var coverText = false
+    /// Where the covered text ends (Cocoa x): the backing reaches at least this far.
+    var coverUntilX: CGFloat?
     private var last: (text: String, caret: NSRect, isFix: Bool, typo: NSRect?)?
 
     init() {
@@ -127,10 +129,12 @@ final class Overlay {
         }
 
         var origin = NSPoint(x: caret.maxX + (useBubble ? 1 : 0) - lead, y: caret.midY - h / 2)
+        var width = w
+        if solid, let end = coverUntilX, end > origin.x + width { width = end - origin.x + 2 }
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: caret.maxX, y: caret.midY)) }) ?? NSScreen.main {
-            origin.x = min(origin.x, screen.visibleFrame.maxX - w)
+            origin.x = min(origin.x, screen.visibleFrame.maxX - width)
         }
-        panel.setFrame(NSRect(origin: origin, size: NSSize(width: w, height: h)), display: true)
+        panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: h)), display: true)
         panel.orderFrontRegardless()
     }
 

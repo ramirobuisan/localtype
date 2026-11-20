@@ -10,6 +10,11 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
 - Per-app and per-website rules (websites work in any browser), typing-history viewer with per-app deletion
 - Statistics: today, a 7/30/90/365-day chart by day/week/month, daily average, estimated time saved
 - Battery: suggestions only on demand, a smaller model, shorter completions; "current word only" length; Setup page that flags macOS inline predictions
+- Works in Chromium/Electron apps (Chrome, Slack, Discord, VS Code…): enables their accessibility tree and finds the caret through text markers
+- Background-aware look: a tiny screenshot next to the caret gives readable contrast and a solid backing over text after the cursor
+- Labs: alternative words under the cursor and synonyms for a selected word (press 1–5); optional floating accessory button
+- Typing history encrypted at rest; optional sync between your Macs through iCloud Drive, end-to-end encrypted with a passphrase
+- About page with a GitHub release check; `localtype://settings/<page>`, `localtype://setup`, `localtype://history` links
 - Per-app enable/disable, typo guard with suggested fixes, custom style instructions, optional clipboard context,
   optional local writing history for personalization, battery pausing, remappable shortcuts, local statistics
 - No accounts, no analytics, nothing sent anywhere
@@ -26,7 +31,7 @@ open LocalType.app
 
 On first launch a setup window walks through **Accessibility** permission (required), the model, and the optional extras (screen context needs **Screen Recording**). With MLX-Serve running, LocalType picks a loaded chat model automatically; pick a small one for speed. Measured on an M5 Max: `mlx-community/gemma-4-e4b-it-4bit` (5.2 GB) answers in ~30–130 ms (recommended: best phrasing, uses your name from the style instructions), `mlx-community/Qwen3.5-4B-MLX-4bit` (3.1 GB) is as fast but rougher, a dense 31B model takes ~1–1.5 s. Add one with `mlx-serve pull <id>` and `curl -X POST http://127.0.0.1:11234/v1/models/rescan`. Without it, open *Models…* and download a GGUF (e.g. Qwen2.5 3B).
 
-Self-tests: `--selftest model.gguf "text"` (built-in engine), `--selftest-mlx "text"` (MLX-Serve), `--selftest-emoji ":fir"`, `--selftest-screen <pid>`.
+Self-tests: `--selftest model.gguf "text"` (built-in engine), `--selftest-mlx "text"` (MLX-Serve), `--selftest-emoji ":fir"`, `--selftest-screen <pid>`, `--selftest-field <bundle ID>` (reads an app's focused field), `--selftest-labs`, `--selftest-update`, and `LOCALTYPE_SUPPORT_DIR=/tmp/x --selftest-sync` (two simulated Macs in a scratch folder).
 
 Headless engine check: `LocalType.app/Contents/MacOS/LocalType --selftest model.gguf "Some text to continue"`
 

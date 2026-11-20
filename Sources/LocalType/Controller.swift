@@ -187,6 +187,7 @@ final class Controller {
         guard let ctx = AX.readContext() else { return }
         overlay.fieldStyle = ctx.style
         overlay.coverText = ctx.hasTextAfter
+        overlay.coverUntilX = ctx.textAfterMaxX
         overlay.backdrop = nil
         if Settings.matchAppearance {
             // Strip to the right of the caret, where the suggestion will go; sampled while the model works.
@@ -285,10 +286,11 @@ final class Controller {
     // MARK: Labs: alternative words and synonyms
 
     static let alternativesPrompt = """
-            You suggest alternative ways to continue text that is being typed. Give 5 different continuations for the text \
-            at the marker ‸, each 1 to 3 words long and each starting with a different word. One per line: no numbering, \
-            no quotes, no explanations. Match the language and tone.
-            """
+        You suggest alternative ways to continue text that is being typed. Give 5 different continuations for the text \
+        at the marker ‸. Each must fit directly after the last word and continue the same sentence (start in lowercase \
+        unless a new sentence begins), be 1 to 3 words long, and start with a different word. One per line: no numbering, \
+        no quotes, no explanations. Match the language and tone.
+        """
     static let synonymsPrompt = """
             You are a thesaurus. Give 5 words or short phrases that could replace the text marked with « » in the passage, \
             with the same meaning and the same grammatical form (tense, number, gender). One per line: no numbering, no quotes, \
@@ -327,7 +329,8 @@ final class Controller {
         listLLM.list(system: system, user: user, count: 5) { [weak self] items in
             DispatchQueue.main.async {
                 guard let self, self.suggestion == current, case .alternatives? = self.choiceKind else { return }
-                let options = items.map { MLXServeCompletion.join($0, after: ctx.prefix) }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                let options = items.map { MLXServeCompletion.join(Controller.continuingCase($0, after: ctx.prefix), after: ctx.prefix) }
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 guard !options.isEmpty else { return }
                 self.choices.show(options, heading: "Other words", below: ctx.caretRect)
             }
@@ -359,6 +362,16 @@ final class Controller {
                 self.choices.show(options.map { Controller.matchCase($0, to: sel.text) }, heading: "Synonyms", below: sel.rect)
             }
         }
+    }
+
+    /// Mid-sentence, "Moving forward" → "moving forward" (only when the lowercase word exists, so "I" and names stay).
+    static func continuingCase(_ option: String, after prefix: String) -> String {
+        let end = prefix.trimmingCharacters(in: .whitespaces).last
+        guard let end, !".!?\n:".contains(end), let first = option.first, first.isUppercase else { return option }
+        let word = String(option.prefix { $0.isLetter || $0 == "'" || $0 == "’" })
+        guard word != "I", !word.hasPrefix("I'"), !word.hasPrefix("I’"), word.count > 1 || word == "A",
+              Spelling.isWord(word.lowercased()) else { return option }
+        return option.prefix(1).lowercased() + option.dropFirst()
     }
 
     /// "Big" → "Large", "BIG" → "LARGE".

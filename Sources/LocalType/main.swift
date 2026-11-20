@@ -117,7 +117,8 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-lab
     MLXServeStore.shared.prepare { _ in
         let prefix = "Thanks for the update. I think we should"
         llm.list(system: Controller.alternativesPrompt, user: "[Writing in Mail]\n\n" + prefix + "‸", count: 5) { alts in
-            print("alternatives after \"\(prefix)\": " + alts.map { MLXServeCompletion.join($0, after: prefix).debugDescription }.joined(separator: ", "))
+            print("alternatives after \"\(prefix)\": " + alts.map { MLXServeCompletion.join(Controller.continuingCase($0, after: prefix), after: prefix).debugDescription }.joined(separator: ", "))
+            print("case: \(Controller.continuingCase("Moving forward", after: "we should")) / \(Controller.continuingCase("I agree", after: "and")) / \(Controller.continuingCase("Laura said", after: "and")) / \(Controller.continuingCase("Great idea", after: "Done."))")
             let user = "Passage: …The results were «good», but the second test took much longer than expected.…\n\nReplace: good"
             llm.list(system: Controller.synonymsPrompt, user: user, count: 5) { syns in
                 print("synonyms for «good»: " + syns.joined(separator: ", "))
