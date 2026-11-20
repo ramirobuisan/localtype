@@ -31,60 +31,103 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
     }
 
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 460),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+                         styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "LocalType Models"
+        w.titleVisibility = .hidden
+        w.titlebarAppearsTransparent = true
+        w.isMovableByWindowBackground = true
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.center()
 
-        source.target = self; source.action = #selector(sourceChanged)
+        // Header
+        let tile = NSImageView(image: iconTile("cpu", .systemPurple, size: 38))
+        tile.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        tile.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        let title = NSTextField(labelWithString: "Models")
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        let blurb = NSTextField(wrappingLabelWithString: "Where LocalType's suggestions come from. Smaller models answer faster.")
+        blurb.font = .systemFont(ofSize: 12); blurb.textColor = .secondaryLabelColor
+        let titles = NSStackView(views: [title, blurb]); titles.orientation = .vertical; titles.alignment = .leading; titles.spacing = 2
+        let header = NSStackView(views: [tile, titles]); header.alignment = .centerY; header.spacing = 12
 
-        for (id, title, width) in [("name", "Model", 270.0), ("size", "Size", 80.0), ("active", "Active", 60.0)] {
+        source.target = self; source.action = #selector(sourceChanged)
+        source.segmentDistribution = .fillEqually
+        source.controlSize = .large
+
+        // Installed models: a borderless table inside a card.
+        for (id, title, width) in [("active", "", 26.0), ("name", "Model", 380.0), ("size", "Size", 80.0)] {
             let c = NSTableColumn(identifier: .init(id)); c.title = title; c.width = width
+            if id == "active" { c.minWidth = 26; c.maxWidth = 26 }
             table.addTableColumn(c)
         }
         table.dataSource = self
         table.delegate = self
+        table.headerView = nil
+        table.rowHeight = 28
+        table.style = .plain
+        table.backgroundColor = .clear
+        table.gridStyleMask = []
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         let sv = NSScrollView()
         sv.documentView = table
         sv.hasVerticalScroller = true
-        sv.borderType = .bezelBorder
-        sv.heightAnchor.constraint(equalToConstant: 160).isActive = true
+        sv.drawsBackground = false
+        sv.borderType = .noBorder
+        sv.heightAnchor.constraint(equalToConstant: 170).isActive = true
+        let installed = Self.card(sv, inset: NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6))
 
         useBtn.target = self; useBtn.action = #selector(useSelected)
         delBtn.target = self; delBtn.action = #selector(deleteSelected)
         importBtn.target = self; importBtn.action = #selector(importFile)
-        let rowBtns = NSStackView(views: [useBtn, delBtn, importBtn])
+        useBtn.keyEquivalent = "\r"
+        for b in [useBtn, delBtn, importBtn] { b.bezelStyle = .push }
+        let rowBtns = NSStackView(views: [importBtn, NSView(), delBtn, useBtn])
         rowBtns.spacing = 8
 
+        // Download
         picker.isEditable = true
-        picker.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        picker.font = .systemFont(ofSize: 13)
         download.target = self; download.action = #selector(startDownload)
+        download.bezelStyle = .push
         cancel.target = self; cancel.action = #selector(cancelDownload)
+        cancel.bezelStyle = .push
         cancel.isHidden = true
+        picker.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let dl = NSStackView(views: [picker, download, cancel])
         dl.spacing = 8
-
         bar.style = .bar
         bar.isIndeterminate = false
         bar.minValue = 0; bar.maxValue = 1
         bar.isHidden = true
+        let dlStack = NSStackView(views: [dl, bar])
+        dlStack.orientation = .vertical; dlStack.alignment = .leading; dlStack.spacing = 8
+        dl.widthAnchor.constraint(equalTo: dlStack.widthAnchor).isActive = true
+        bar.widthAnchor.constraint(equalTo: dlStack.widthAnchor).isActive = true
+        let dlCard = Self.card(dlStack, inset: NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14))
+
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
 
-        func header(_ s: String) -> NSTextField {
-            let l = NSTextField(labelWithString: s); l.font = .boldSystemFont(ofSize: 12); return l
+        func heading(_ s: String) -> NSView {
+            let l = NSTextField(labelWithString: s); l.font = .systemFont(ofSize: 13, weight: .semibold)
+            let w = NSStackView(views: [l]); w.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0); return w
         }
-        let dlHeader = header("Download a model")
-        downloadViews = [dlHeader, dl]
-        let stack = NSStackView(views: [source, header("Installed"), sv, rowBtns, dlHeader, dl, bar, status])
+        let dlHeader = heading("Download a model")
+        downloadViews = [dlHeader, dlCard]
+        let views: [NSView] = [header, source, heading("Installed"), installed, rowBtns, dlHeader, dlCard, status]
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.setCustomSpacing(18, after: header)
+        stack.setCustomSpacing(18, after: source)
+        stack.setCustomSpacing(18, after: rowBtns)
+        stack.edgeInsets = NSEdgeInsets(top: 40, left: 28, bottom: 22, right: 28)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        for v in views { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true }
         let cv = NSView()
         cv.addSubview(stack)
         w.contentView = cv
@@ -92,11 +135,24 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
             stack.topAnchor.constraint(equalTo: cv.topAnchor),
             stack.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
-            sv.widthAnchor.constraint(equalToConstant: 500),
-            bar.widthAnchor.constraint(equalToConstant: 500),
+            stack.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
+            cv.widthAnchor.constraint(equalToConstant: 600),
         ])
-        w.setContentSize(stack.fittingSize)
         window = w
+    }
+
+    /// Content inside a System Settings-style card.
+    private static func card(_ content: NSView, inset: NSEdgeInsets) -> NSView {
+        let c = CardView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: c.topAnchor, constant: inset.top),
+            content.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -inset.bottom),
+            content.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: inset.left),
+            content.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -inset.right),
+        ])
+        return c
     }
 
     @objc private func sourceChanged() {
@@ -140,15 +196,23 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
 
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         let m = models[row]
-        let text: String
         switch col?.identifier.rawValue {
-        case "size": text = ByteCountFormatter.string(fromByteCount: m.size, countStyle: .file)
-        case "active": text = store.isActive(m.name) ? "✓" : ""
-        default: text = m.name
+        case "active":
+            guard store.isActive(m.name) else { return NSView() }
+            let img = NSImageView(image: NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Active") ?? NSImage())
+            img.contentTintColor = .systemGreen
+            return img
+        case "size":
+            let l = NSTextField(labelWithString: m.size > 0 ? ByteCountFormatter.string(fromByteCount: m.size, countStyle: .file) : "")
+            l.textColor = .secondaryLabelColor
+            l.alignment = .right
+            return l
+        default:
+            let l = NSTextField(labelWithString: m.name)
+            l.font = .systemFont(ofSize: 13, weight: store.isActive(m.name) ? .semibold : .regular)
+            l.lineBreakMode = .byTruncatingMiddle
+            return l
         }
-        let l = NSTextField(labelWithString: text)
-        l.lineBreakMode = .byTruncatingMiddle
-        return l
     }
 
     private var selected: InstalledModel? {

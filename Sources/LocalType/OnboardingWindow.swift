@@ -29,67 +29,100 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     // MARK: Layout
 
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 600),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 720),
+                         styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Welcome to LocalType"
+        w.titleVisibility = .hidden
+        w.titlebarAppearsTransparent = true
+        w.isMovableByWindowBackground = true
         w.isReleasedWhenClosed = false
         w.delegate = self
 
+        // Header: app icon, title, one-line intro, centered.
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? iconTile("text.cursor", .systemIndigo, size: 80))
+        icon.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 80).isActive = true
         let title = NSTextField(labelWithString: "Welcome to LocalType")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
+        title.font = .systemFont(ofSize: 26, weight: .bold)
+        title.alignment = .center
         let intro = NSTextField(wrappingLabelWithString:
-            "LocalType suggests how to finish your sentence in any app, using a model that runs entirely on this Mac. Two things are required; the rest is optional and can be changed later in Settings.")
+            "Suggestions to finish your sentences in any app, from a model that runs entirely on this Mac. Two things are required; the rest can wait or be changed later in Settings.")
+        intro.font = .systemFont(ofSize: 13)
         intro.textColor = .secondaryLabelColor
+        intro.alignment = .center
+        let header = NSStackView(views: [icon, title, intro])
+        header.orientation = .vertical; header.alignment = .centerX; header.spacing = 8
+        header.setCustomSpacing(14, after: icon)
+        intro.widthAnchor.constraint(lessThanOrEqualToConstant: 470).isActive = true
 
         axButton.target = self; axButton.action = #selector(grantAX)
         modelButton.target = self; modelButton.action = #selector(chooseModel)
         screenSwitch.target = self; screenSwitch.action = #selector(screenToggled)
         emojiSwitch.target = self; emojiSwitch.action = #selector(emojiToggled)
-        for l in [axStatus, modelStatus, screenStatus] { l.font = .systemFont(ofSize: 11); l.textColor = .secondaryLabelColor }
+        screenSwitch.controlSize = .small
+        emojiSwitch.controlSize = .small
+        for b in [axButton, modelButton] { b.bezelStyle = .push }
+        for l in [axStatus, modelStatus, screenStatus] { l.font = .systemFont(ofSize: 11, weight: .medium) }
 
         style.isRichText = false
-        style.font = .systemFont(ofSize: 12)
+        style.font = .systemFont(ofSize: 13)
         style.string = Settings.instructions
         style.delegate = self
         style.isVerticallyResizable = true
         style.autoresizingMask = [.width]
         style.textContainer?.widthTracksTextView = true
+        style.textContainerInset = NSSize(width: 4, height: 6)
+        style.drawsBackground = false
         let styleScroll = NSScrollView()
         styleScroll.documentView = style
         styleScroll.hasVerticalScroller = true
-        styleScroll.borderType = .bezelBorder
-        styleScroll.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        styleScroll.drawsBackground = false
+        styleScroll.borderType = .noBorder
+        styleScroll.heightAnchor.constraint(equalToConstant: 66).isActive = true
+        let placeholderNote = label("For example: “I'm Laura, a nurse. I write in English and Spanish, friendly but short.”", bold: false)
+        let styleBox = NSStackView(views: [styleScroll, placeholderNote])
+        styleBox.orientation = .vertical; styleBox.alignment = .leading; styleBox.spacing = 6
+        styleBox.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 10, right: 14)
+        styleScroll.widthAnchor.constraint(equalTo: styleBox.widthAnchor, constant: -24).isActive = true
 
         let tips = NSTextField(wrappingLabelWithString:
-            "Using it: type in any app and pause briefly. Each ⇥ accepts one word, ⌥⇥ accepts the whole suggestion, Esc dismisses. Type :name for an emoji (↓ for other matches). The menu-bar icon (a text cursor) has Settings and Models.")
+            "Using it: type in any app and pause briefly. Each ⇥ accepts one word, ⌥⇥ the whole suggestion, Esc dismisses. Type :name for an emoji. The menu-bar icon has Settings and Models.")
         tips.font = .systemFont(ofSize: 11)
         tips.textColor = .secondaryLabelColor
 
         let done = NSButton(title: "Done", target: self, action: #selector(finish))
         done.keyEquivalent = "\r"
-        done.bezelStyle = .rounded
-        let footer = NSStackView(views: [NSView(), done])
+        done.bezelStyle = .push
+        done.controlSize = .large
+        done.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
+        let footer = NSStackView(views: [tips, done])
+        footer.alignment = .centerY; footer.spacing = 16
+        tips.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let howTitle = label("How you write (optional)", bold: true)
         let views: [NSView] = [
-            title, intro,
-            step("1", "Accessibility access", "Lets LocalType see the text before your cursor and type accepted suggestions.", axStatus, axButton),
-            step("2", "A language model", OnboardingWindow.modelHint, modelStatus, modelButton),
-            step("3", "Screen context (optional)", "Reads the window you're typing in with on-device text recognition so replies fit the conversation. Needs Screen Recording permission.", screenStatus, screenSwitch),
-            step("4", "Emoji completion (optional)", "Type :fire or :thumbs_up to get 🔥 or 👍.", nil, emojiSwitch),
-            howTitle,
-            label("Your languages, tone or job, in a sentence or two. Added to every prompt.", bold: false),
-            styleScroll,
-            tips, footer,
+            header,
+            group("Required", [
+                step("accessibility", .systemBlue, "Accessibility access",
+                     "Lets LocalType see the text before your cursor and type the suggestions you accept.", axStatus, axButton),
+                step("cpu", .systemPurple, "A language model", OnboardingWindow.modelHint, modelStatus, modelButton),
+            ]),
+            group("Optional", [
+                step("text.viewfinder", .systemTeal, "Screen context",
+                     "Reads the window you're typing in with on-device text recognition so replies fit the conversation. Needs Screen Recording.",
+                     screenStatus, screenSwitch),
+                step("face.smiling", .systemYellow, "Emoji completion", "Type :fire or :thumbs_up to get 🔥 or 👍.", nil, emojiSwitch),
+            ]),
+            group("How you write", [styleBox]),
+            footer,
         ]
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
-        stack.setCustomSpacing(4, after: howTitle)
-        stack.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 20, right: 28)
+        stack.spacing = 20
+        stack.setCustomSpacing(24, after: header)
+        stack.edgeInsets = NSEdgeInsets(top: 44, left: 32, bottom: 24, right: 32)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for v in views { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true }
+        for v in views { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -64).isActive = true }
 
         let cv = NSView()
         cv.addSubview(stack)
@@ -98,10 +131,45 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             stack.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
-            cv.widthAnchor.constraint(equalToConstant: 580),
+            cv.widthAnchor.constraint(equalToConstant: 600),
         ])
         w.contentView = cv
         window = w
+    }
+
+    /// A titled card holding rows separated by inset dividers.
+    private func group(_ title: String, _ rows: [NSView]) -> NSView {
+        var views: [NSView] = []
+        for (i, r) in rows.enumerated() {
+            if i > 0 {
+                let d = Divider()
+                let wrap = NSStackView(views: [d])
+                wrap.edgeInsets = NSEdgeInsets(top: 0, left: 54, bottom: 0, right: 14)
+                d.widthAnchor.constraint(equalTo: wrap.widthAnchor, constant: -68).isActive = true
+                views.append(wrap)
+            }
+            views.append(r)
+        }
+        let inner = NSStackView(views: views)
+        inner.orientation = .vertical; inner.alignment = .leading; inner.spacing = 0
+        for v in views { v.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true }
+        let card = CardView()
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.topAnchor.constraint(equalTo: card.topAnchor, constant: 2),
+            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -2),
+            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+        ])
+        let heading = NSTextField(labelWithString: title)
+        heading.font = .systemFont(ofSize: 13, weight: .semibold)
+        let headWrap = NSStackView(views: [heading])
+        headWrap.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0)
+        let s = NSStackView(views: [headWrap, card])
+        s.orientation = .vertical; s.alignment = .leading; s.spacing = 8
+        card.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
+        return s
     }
 
     private func label(_ s: String, bold: Bool) -> NSTextField {
@@ -119,20 +187,24 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         }
     }
 
-    private func step(_ n: String, _ title: String, _ desc: String, _ status: NSTextField?, _ control: NSView) -> NSView {
-        let badge = NSTextField(labelWithString: n)
-        badge.font = .monospacedDigitSystemFont(ofSize: 13, weight: .bold)
-        badge.textColor = .controlAccentColor
-        badge.widthAnchor.constraint(equalToConstant: 16).isActive = true
-        var texts: [NSView] = [label(title, bold: true), label(desc, bold: false)]
+    private func step(_ symbol: String, _ color: NSColor, _ title: String, _ desc: String, _ status: NSTextField?, _ control: NSView) -> NSView {
+        let tile = NSImageView(image: iconTile(symbol, color, size: 28))
+        tile.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        tile.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        let t = NSTextField(wrappingLabelWithString: title)
+        t.font = .systemFont(ofSize: 13, weight: .medium)
+        var texts: [NSView] = [t, label(desc, bold: false)]
         if let status { texts.append(status) }
         let col = NSStackView(views: texts)
         col.orientation = .vertical; col.alignment = .leading; col.spacing = 2
         col.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let row = NSStackView(views: [badge, col, control])
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [tile, col, spacer, control])
         row.alignment = .centerY; row.spacing = 12
+        row.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
         return row
     }
 

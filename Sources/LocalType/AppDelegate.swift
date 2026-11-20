@@ -23,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(statusLine)
         m.addItem(.separator())
         for i in [toggle, perApp, perSite, models, settings, setup] { i.target = self; m.addItem(i) }
+        let symbols: [(NSMenuItem, String)] = [(toggle, "power"), (perApp, "app.dashed"), (perSite, "globe"), (models, "cpu"),
+                                               (settings, "gearshape"), (setup, "checkmark.seal"), (update, "arrow.down.circle")]
+        for (i, sym) in symbols { i.image = NSImage(systemSymbolName: sym, accessibilityDescription: nil) }
         update.target = self
         update.isHidden = true
         m.addItem(update)
@@ -42,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         AccessoryButton.shared.update()
         ModelsWindow.shared.onChange = { [weak self] in self?.checkModelStatusOnly() }
-        Controller.shared.onStatus = { [weak self] s in self?.statusLine.title = s }
+        Controller.shared.onStatus = { [weak self] s in self?.setStatus(s, ok: s == "Ready") }
         let firstRun = !Settings.onboardingDone || CommandLine.arguments.contains("--setup")
         Sync.update()
         startWhenTrusted(prompt: !firstRun)
@@ -62,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             checkModel()
             return
         }
-        statusLine.title = "Grant Accessibility access…"
+        setStatus("Grant Accessibility access…", ok: false)
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
             if AX.trusted(prompt: false), Controller.shared.start() {
                 t.invalidate()
@@ -141,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.list { [weak self] list in
             let have = list?.contains { store.isActive($0.name) } ?? false
             let name = store.activeName
-            self?.statusLine.title = have ? "Ready · \(name)" : "No model selected — open Models…"
+            self?.setStatus(have ? "Ready · \(name.split(separator: "/").last.map(String.init) ?? name)" : "No model selected — open Models…", ok: have)
         }
     }
 
@@ -150,9 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Reports model readiness; warms up the embedded model or starts Ollama as needed.
     private func checkModel() {
         if Settings.backend == "mlxserve" {
-            statusLine.title = "Connecting to MLX-Serve…"
+            setStatus("Connecting to MLX-Serve…", ok: nil)
             MLXServeStore.shared.prepare { [weak self] problem in
-                if let problem { self?.statusLine.title = problem; return }
+                if let problem { self?.setStatus(problem, ok: false); return }
                 MLXServeStore.shared.autoSelect { self?.checkModelStatusOnly() }
             }
             return
@@ -172,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ModelManager.shared.ensureServer { [weak self] up in
             guard let self else { return }
             guard up else {
-                self.statusLine.title = ModelManager.ollamaBinary == nil ? "Ollama not installed" : "Ollama unreachable"
+                self.setStatus(ModelManager.ollamaBinary == nil ? "Ollama not installed" : "Ollama unreachable", ok: false)
                 return
             }
             ModelManager.shared.list { list in
@@ -184,6 +187,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() { SettingsWindow.shared.show(page: "General") }
     @objc private func openSetup() { OnboardingWindow.shared.show() }
+
+    /// Status line at the top of the menu: a colored dot (green ready, orange needs attention, gray working) and text.
+    private func setStatus(_ text: String, ok: Bool?) {
+        let color: NSColor = ok == true ? .systemGreen : ok == false ? .systemOrange : .systemGray
+        let s = NSMutableAttributedString(string: "● ", attributes: [.foregroundColor: color, .font: NSFont.menuFont(ofSize: 11)])
+        s.append(NSAttributedString(string: text, attributes: [.foregroundColor: NSColor.secondaryLabelColor,
+                                                               .font: NSFont.menuFont(ofSize: 0)]))
+        statusLine.attributedTitle = s
+    }
 
     private func refreshUpdateItem() {
         update.isHidden = Updates.available == nil

@@ -2,6 +2,8 @@
 
 A macOS menu-bar app that suggests how to finish your sentence in **any app**, using a language model that runs **entirely on your Mac**. Independent, unofficial project inspired by tools like Cotypist; not affiliated with them.
 
+<p align="center"><img src="docs/suggestion.png" width="720" alt="A suggestion as faded text at the cursor in TextEdit, with the alternative-words list below it and the accessory button in the corner"></p>
+
 - Ghost-text suggestion at the caret · each **Tab** accepts one word · **⌥Tab** accepts it all · **Esc** dismisses
 - Models: MLX-Serve (default when installed; uses any chat model it has, nothing downloaded), a built-in [llama.cpp](https://github.com/ggml-org/llama.cpp) engine (Metal, download / import GGUF in-app), or Ollama
 - Screen context: reads the window you're typing in (ScreenCaptureKit + on-device Vision OCR) so replies fit the conversation
@@ -18,6 +20,8 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
 - Per-app enable/disable, typo guard with suggested fixes, custom style instructions, optional clipboard context,
   optional local writing history for personalization, battery pausing, remappable shortcuts, local statistics
 - No accounts, no analytics, nothing sent anywhere
+
+<p align="center"><img src="docs/settings.png" width="720" alt="LocalType Settings, General page, in dark mode"></p>
 
 ## Download
 
