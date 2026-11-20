@@ -239,6 +239,80 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
     RunLoop.main.run()
 }
 
+// Half-typed words: LocalType --selftest-halfwords ["text" …] — for each text, what the first press of the word key
+// would insert (typo fix or model suggestion), flagging a space inside the word being finished.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-halfwords" {
+    var texts = Array(CommandLine.arguments.dropFirst(2)).filter { !$0.hasPrefix("-") }
+    if texts.isEmpty {
+        texts = ["Nos vemos mañana en la universi", "Te escribo para con", "Muchas gracias por tu ayu", "Hasta mañ",
+                 "Quedamos el próximo vier", "Te mando el docu", "Perfecto, lo reviso esta tar", "Un sal",
+                 "Me parece buena ide", "Necesito que me confir", "I'll send you the docum", "Thanks, I really apprec",
+                 "See you tomor", "Could you plea", "Let me know if you have any ques", "I'm looking forw",
+                 "Vamos mañana al par", "Te llamo esta tar"]
+    }
+    var bad = 0
+    // The join rule with fixed replies (text, reply, expected suggestion).
+    let joins: [(String, String, String)] = [
+        ("Perfecto, lo reviso esta tar", "de y te digo algo", "de y te digo algo"),
+        ("Vamos mañana al par", "que con los niños", "que con los niños"),
+        ("Necesito que me lo confir", "mes cuanto antes", "mes cuanto antes"),
+        ("Gracias por tu ayu", "da con todo", "da con todo"),
+        ("I'm going in", "to the store later", " to the store later"),
+        ("See you tom", "orrow then", "orrow then"),
+        ("I'll send the docum", "ents today", "ents today"),
+        ("Thanks for the update", "Talk soon", " Talk soon"),
+        ("Te escribo para con", "firmar el contrato", "firmar el contrato"),
+        ("Te llamo esta tar", "che", "de che"),
+        ("Could you plea", "sease let me know", ""),
+        ("I'll be there in", "five minutes", " five minutes"),
+        ("We should meet some", "time next week", "time next week"),
+        ("ok sounds good", "see you then", " see you then"),
+        ("Hi there", "Ramiro here", " Ramiro here"),
+    ]
+    for (text, reply, want) in joins {
+        let got = ChatCompletion.join(reply, after: text)
+        if got != want { bad += 1 }
+        print("\(got == want ? "✓" : "✗") join: …\(text.suffix(24)) + \(reply.debugDescription) → \(got.debugDescription)\(got == want ? "" : " (want \(want.debugDescription))")")
+    }
+    for (word, text) in [("mañan", "Nos vemos mañan"), ("confir", "Necesito que me confir"), ("apprec", "Thanks, I really apprec")] {
+        let t = Controller.checkTypo(word, in: text)
+        print("typo check \(word.debugDescription) in \(Spelling.language(of: text) ?? "?"): \(t == nil ? "not a typo" : "typo, fix \((t! ?? "none").debugDescription)")")
+    }
+    func run(_ i: Int) {
+        guard i < texts.count else { print("\n\(texts.count + joins.count - bad)/\(texts.count + joins.count) clean"); exit(bad == 0 ? 0 : 1) }
+        let prefix = texts[i]
+        func report(_ kind: String, _ inserted: String, deleting: Int = 0) {
+            let result = String(prefix.dropLast(deleting)) + inserted
+            let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
+            // The word being finished: from where it starts in the result up to its first space.
+            let start = result.index(result.startIndex, offsetBy: prefix.count - tail.count)
+            let spaced = !tail.isEmpty && (result[start...].first { !$0.isLetter && !"'’-".contains($0) }.map { $0 == " " } ?? false)
+                && inserted.first.map { $0 == " " || deleting > 0 } == true
+            if spaced { bad += 1 }
+            print("\(spaced ? "✗" : "✓") \(kind): …\(prefix.suffix(28)) → …\(result.suffix(36).debugDescription)")
+        }
+        if Settings.typoGuard, let word = Controller.currentWord(prefix), let typo = Controller.checkTypo(word, in: prefix) {
+            if let fix = typo { report("fix", fix, deleting: word.count) } else { print("· no suggestion (typo, no fix): …\(prefix.suffix(28))") }
+            return run(i + 1)
+        }
+        // Same path as LLM.complete, keeping the raw reply to show next to the result.
+        guard let req = ChatCompletion.request(context: "[Writing in Mail]\n\n", text: prefix, maxTokens: Settings.effectiveMaxTokens) else { exit(1) }
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            let reply = data.flatMap(ChatCompletion.parse)
+            let joined = reply.map { ChatCompletion.join($0.text, after: prefix, cut: $0.cut) } ?? ""
+            let out = ChatCompletion.dropLanguageSwitch(ChatCompletion.dropInventedFigures(joined, context: prefix), prefix: prefix)
+            DispatchQueue.main.async {
+                let text = Controller.clean(out, prefix: prefix)
+                if text.isEmpty { print("· no suggestion: …\(prefix.suffix(28))") } else { report("model", Controller.splitWord(text).word) }
+                print("    raw reply \((reply?.text ?? "nil").debugDescription)")
+                run(i + 1)
+            }
+        }.resume()
+    }
+    MLXServeStore.shared.prepare { _ in run(0) }
+    RunLoop.main.run()
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []

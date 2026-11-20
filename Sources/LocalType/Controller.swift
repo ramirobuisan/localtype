@@ -172,11 +172,11 @@ final class Controller {
 
     // MARK: Suggest
 
-    private func schedule() {
+    private func schedule(afterMs ms: Int = Settings.debounceMs) {
         debounce?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.trigger() }
         debounce = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Settings.debounceMs), execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms), execute: w)
     }
 
     private var lastPrefix = ""
@@ -229,7 +229,7 @@ final class Controller {
         if Settings.pauseOnBattery, Controller.onBattery { return }
         if Settings.batteryOnDemand, !force, Controller.onBattery { return }
 
-        if Settings.typoGuard, let word = Controller.currentWord(ctx.prefix), let typo = Controller.checkTypo(word) {
+        if Settings.typoGuard, let word = Controller.currentWord(ctx.prefix), let typo = Controller.checkTypo(word, in: ctx.prefix) {
             if Settings.suggestFixes, let fix = typo {
                 suggestion = fix; fixDelete = word.count
                 let typoRect = ctx.isPractice ? nil : AX.screenRect(ctx.element, location: ctx.caretIndex - word.count, length: word.count)
@@ -269,7 +269,7 @@ final class Controller {
         }
     }
 
-    private static func clean(_ raw: String, prefix: String) -> String {
+    static func clean(_ raw: String, prefix: String) -> String {
         var t = raw.replacingOccurrences(of: "\r", with: "")
         if let nl = t.firstIndex(of: "\n") { t = String(t[..<nl]) }
         // Don't start with a second space if the prefix already ends in one.
@@ -417,21 +417,24 @@ final class Controller {
     // MARK: Typo guard
 
     /// The word being typed, if the caret is right after letters.
-    private static func currentWord(_ prefix: String) -> String? {
+    static func currentWord(_ prefix: String) -> String? {
         let w = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         return w.count >= 3 ? w : nil
     }
 
     /// nil = looks fine; .some(fix) = suspected typo (fix may be nil if there's no good guess).
-    private static func checkTypo(_ word: String) -> String?? {
-        let sc = NSSpellChecker.shared
+    /// nil: not a typo. .some(nil): a typo without a fix. `text` is what was typed, for its language: a Spanish
+    /// half-word isn't an English typo ("mañan" can still become "mañana").
+    static func checkTypo(_ word: String, in text: String) -> String?? {
+        guard !Spelling.isWord(word) else { return nil }   // a word in any of the user's languages
+        // Misspelled as-is; fine if it can still grow into a real word in one of them.
         let all = NSRange(location: 0, length: (word as NSString).length)
-        guard sc.checkSpelling(of: word, startingAt: 0).location != NSNotFound else { return nil }
-        // Misspelled as-is; fine if it can still grow into a real word.
-        if let c = sc.completions(forPartialWordRange: all, in: word, language: nil, inSpellDocumentWithTag: 0), !c.isEmpty {
-            return nil
+        let sc = NSSpellChecker.shared
+        for lang in Spelling.languages(for: text) {
+            if let c = sc.completions(forPartialWordRange: all, in: word, language: lang, inSpellDocumentWithTag: 0), !c.isEmpty { return nil }
         }
-        return .some(sc.correction(forWordRange: all, in: word, language: sc.language(), inSpellDocumentWithTag: 0))
+        return .some(sc.correction(forWordRange: all, in: word, language: Spelling.languages(for: text).first ?? sc.language(),
+                                   inSpellDocumentWithTag: 0))
     }
 
     static var onBattery: Bool {
@@ -485,7 +488,12 @@ final class Controller {
         Settings.fixesApplied += 1
         deleteBackward(n)
         type(text)
+        refill()
     }
+
+    /// The suggestion was used up: ask for the next one as if the person had paused there. Typing in the
+    /// meantime reschedules it. At least 150 ms, so the app has applied the inserted text before it's read back.
+    private func refill() { schedule(afterMs: max(Settings.debounceMs, 150)) }
 
     private func acceptEmoji(_ item: Emoji.Item, delete n: Int) {
         dismiss()
@@ -511,6 +519,25 @@ final class Controller {
     // MARK: Accept
 
     private func acceptWord(_ text: String) {
+        let (word, rest) = Controller.splitWord(text)
+        dismiss()
+        Settings.accepted += 1; Settings.wordsAccepted += 1
+        recordAccepted(word)
+        type(word)
+        if !practice { Stats.shared.record(word, app: lastApp) }
+        guard !rest.trimmingCharacters(in: .whitespaces).isEmpty else { return refill() }
+        // Let the target app apply the insert, then re-anchor the remainder at the new caret.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
+            guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
+            self.lastPrefix = ctx.prefix
+            self.suggestion = rest
+            self.overlay.fieldStyle = ctx.style
+            self.overlay.show(rest, at: ctx.caretRect)
+        }
+    }
+
+    /// What one press of the word key inserts, and what stays in the suggestion.
+    static func splitWord(_ text: String) -> (word: String, rest: String) {
         // Leading whitespace, then a run of word characters (or, failing that, any non-space run).
         var idx = text.startIndex
         let isWordChar: (Character) -> Bool = { $0.isLetter || $0.isNumber || "'’-".contains($0) }
@@ -524,22 +551,7 @@ final class Controller {
             while idx < text.endIndex, !text[idx].isWhitespace, !isWordChar(text[idx]) { idx = text.index(after: idx) }
         }
         if Settings.includeTrailingSpace, idx < text.endIndex, text[idx] == " " { idx = text.index(after: idx) }
-        let word = String(text[..<idx])
-        let rest = String(text[idx...])
-        dismiss()
-        Settings.accepted += 1; Settings.wordsAccepted += 1
-        recordAccepted(word)
-        type(word)
-        if !practice { Stats.shared.record(word, app: lastApp) }
-        guard !rest.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        // Let the target app apply the insert, then re-anchor the remainder at the new caret.
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
-            guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
-            self.lastPrefix = ctx.prefix
-            self.suggestion = rest
-            self.overlay.fieldStyle = ctx.style
-            self.overlay.show(rest, at: ctx.caretRect)
-        }
+        return (String(text[..<idx]), String(text[idx...]))
     }
 
     private func accept(_ text: String) {
@@ -555,7 +567,7 @@ final class Controller {
         Settings.wordsAccepted += take.split(whereSeparator: { $0.isWhitespace }).count
         type(take)
         if !practice { Stats.shared.record(take, app: lastApp) }
-        guard !rest.isEmpty else { return }
+        guard !rest.isEmpty else { return refill() }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
             guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
             self.lastPrefix = ctx.prefix

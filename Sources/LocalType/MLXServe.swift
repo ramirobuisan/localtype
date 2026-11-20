@@ -250,7 +250,12 @@ enum ChatCompletion {
             // Mid-word: the reply finishes the word ("I'll send the docum" + "ents").
             t = repairOverlap(prefix, t)
             if let fixed = completeIgnoredWord(prefix, t) { return fixed }
-            return finishesWord(prefix, t) ? t : " " + t
+            if finishesWord(prefix, t) { return t }
+            // A new word right after a complete one. A lowercase non-word there is a garbled attempt at finishing
+            // the word ("esta tar" + "che", "Could you plea" + "sease"): show nothing rather than " che".
+            let head = String(t.prefix { $0.isLetter })
+            if head.count >= 2, head.first?.isLowercase == true, !Spelling.isWord(head) { return "" }
+            return " " + t
         }
         if "([{\"“‘/-".contains(last) { return t }
         return " " + t
@@ -281,9 +286,9 @@ enum ChatCompletion {
     private static func repairOverlap(_ prefix: String, _ reply: String) -> String {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
-        guard tail.count >= 2, !head.isEmpty, !Spelling.isWord(tail + head) else { return reply }
+        guard tail.count >= 2, !head.isEmpty, !Spelling.isWord(tail + head, in: prefix) else { return reply }
         for k in stride(from: min(tail.count, head.count), through: 1, by: -1)
-        where tail.suffix(k).lowercased() == head.prefix(k).lowercased() && Spelling.isWord(tail + head.dropFirst(k)) {
+        where tail.suffix(k).lowercased() == head.prefix(k).lowercased() && Spelling.isWord(tail + head.dropFirst(k), in: prefix) {
             return String(reply.dropFirst(k))
         }
         return reply
@@ -295,27 +300,28 @@ enum ChatCompletion {
     private static func completeIgnoredWord(_ prefix: String, _ reply: String) -> String? {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
-        guard tail.count >= 2, !head.isEmpty, !Spelling.isWord(tail), !Spelling.isWord(tail + head) else { return nil }
-        guard Spelling.isWord(head) else { return "" }   // neither finishes the word nor makes sense on its own
-        guard let word = Spelling.completion(of: tail) else { return "" }
+        guard tail.count >= 2, !head.isEmpty, !Spelling.isCommonWord(tail, in: prefix), !Spelling.isWord(tail + head, in: prefix) else { return nil }
+        guard Spelling.isWord(head, in: prefix) else { return "" }   // neither finishes the word nor makes sense on its own
+        guard let word = Spelling.completion(of: tail, in: prefix) else { return "" }
         return String(word.dropFirst(tail.count)) + " " + reply
     }
 
-    /// True when the reply continues the word the text ends in: that word isn't a word yet ("docum"),
-    /// or the joined form is a normal completion of it ("rem" + "ind") and the reply doesn't simply start
-    /// with a short word of its own ("in" + "to the store").
+    /// True when the reply continues the word the text ends in. Chat replies never start with the joining space, so
+    /// when the text ends in a whole word ("con", "tar") the reply may finish it or start a new one: it finishes it
+    /// when the two together make a word ("con" + "firmar", "the" + "re"). A reply starting with a short word of its
+    /// own is the exception: joining then needs the joined word to be one of the most common completions in the
+    /// text's language, so "tar" + "de" is "tarde" (its first completion) but "in" + "to the store" stays two words.
     private static func finishesWord(_ prefix: String, _ reply: String) -> Bool {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
         guard !tail.isEmpty, !head.isEmpty else { return false }
-        if !Spelling.isWord(tail) { return true }
-        if Spelling.shortWords(for: prefix).contains(head.lowercased()) { return false }
+        if head.first?.isUppercase == true, tail.last?.isLowercase == true { return false }   // "update" + "Talk soon"
+        if !Spelling.isCommonWord(tail, in: prefix) { return true }
         let joined = tail + head
-        guard Spelling.isWord(joined) else { return false }
-        if !Spelling.isWord(head) { return true }
-        let r = NSRange(location: 0, length: (tail as NSString).length)
-        let completions = NSSpellChecker.shared.completions(forPartialWordRange: r, in: tail, language: nil, inSpellDocumentWithTag: 0) ?? []
-        return completions.contains { $0.caseInsensitiveCompare(joined) == .orderedSame }
+        guard Spelling.isWord(joined, in: prefix) else { return false }
+        guard Spelling.shortWords(for: prefix).contains(head.lowercased()) else { return true }
+        let rank = Spelling.completions(of: tail, in: prefix).firstIndex { $0.caseInsensitiveCompare(joined) == .orderedSame }
+        return rank.map { $0 < 8 } ?? false
     }
 
 }
@@ -351,10 +357,31 @@ enum Spelling {
         }
     }
 
-    /// The dictionary's first completion of a partial word in the user's languages ("apprec" → "appreciate").
-    static func completion(of partial: String) -> String? {
+    /// The user's spell-checker language that `text` is clearly written in, if any.
+    static func language(of text: String) -> String? {
+        let r = NLLanguageRecognizer()
+        r.processString(String(text.suffix(300)))
+        guard let (lang, p) = r.languageHypotheses(withMaximum: 1).first, p > 0.6 else { return nil }
+        return languages.first { $0 == lang.rawValue || $0.hasPrefix(lang.rawValue + "_") }
+    }
+
+    /// The user's languages, the one `text` is written in first ("confir" in Spanish → "confirmar", not "confirming").
+    static func languages(for text: String?) -> [String] {
+        guard let text, let l = language(of: text) else { return languages }
+        return [l] + languages.filter { $0 != l }
+    }
+
+    /// Dictionary completions of a partial word, most common first, in the text's language (or the first one).
+    static func completions(of partial: String, in text: String? = nil) -> [String] {
         let r = NSRange(location: 0, length: (partial as NSString).length)
-        for lang in languages {
+        return NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: languages(for: text).first,
+                                                 inSpellDocumentWithTag: 0) ?? []
+    }
+
+    /// The dictionary's first completion of a partial word, trying the text's language first ("apprec" → "appreciate").
+    static func completion(of partial: String, in text: String? = nil) -> String? {
+        let r = NSRange(location: 0, length: (partial as NSString).length)
+        for lang in languages(for: text) {
             let list = NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: lang, inSpellDocumentWithTag: 0) ?? []
             if let w = list.first(where: { $0.lowercased().hasPrefix(partial.lowercased()) && $0.count > partial.count }) {
                 // Keep the typed capitalization.
@@ -364,10 +391,18 @@ enum Spelling {
         return nil
     }
 
-    /// A word in any of the user's languages.
-    static func isWord(_ w: String) -> Bool {
+    /// A word people commonly type on its own: the dictionary lists it among its own completions ("con" → "con,
+    /// contenido…"), while a rare word that's usually the start of a longer one isn't ("tar" → "tarde, tarjeta…").
+    static func isCommonWord(_ w: String, in text: String) -> Bool {
+        guard isWord(w, in: text) else { return false }
+        return completions(of: w, in: text).contains { $0.caseInsensitiveCompare(w) == .orderedSame }
+    }
+
+    /// A word in the text's language when that's clear, else in any of the user's languages.
+    static func isWord(_ w: String, in text: String? = nil) -> Bool {
         let sc = NSSpellChecker.shared
-        return languages.contains { lang in
+        let langs = text.flatMap(language(of:)).map { [$0] } ?? languages
+        return langs.contains { lang in
             sc.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
         }
     }
