@@ -20,6 +20,28 @@ if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--selftest" {
     exit(0)
 }
 
+// MLX-Serve check: LocalType --selftest-mlx "text one" "text two" … (uses the configured or a loaded model)
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-mlx" {
+    let texts = Array(CommandLine.arguments.dropFirst(2))
+    let llm = LLM()
+    Settings.backend = "mlxserve"
+    func run(_ i: Int) {
+        guard i < texts.count else { exit(0) }
+        let t0 = Date()
+        llm.complete(prefix: texts[i], appName: "Notes") { out in
+            DispatchQueue.main.async {
+                print("[\(Int(Date().timeIntervalSince(t0) * 1000)) ms] \(texts[i].debugDescription) + \(out.map { $0.debugDescription } ?? "nil")")
+                run(i + 1)
+            }
+        }
+    }
+    MLXServeStore.shared.prepare { problem in
+        if let problem { print(problem); exit(1) }
+        MLXServeStore.shared.autoSelect { print("model: \(Settings.mlxModel)"); run(0) }
+    }
+    RunLoop.main.run()
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     for text in CommandLine.arguments.dropFirst(2) {

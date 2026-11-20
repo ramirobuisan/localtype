@@ -100,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Reports model readiness; warms up the embedded model or starts Ollama as needed.
     private func checkModel() {
+        if Settings.backend == "mlxserve" {
+            statusLine.title = "Connecting to MLX-Serve…"
+            MLXServeStore.shared.prepare { [weak self] problem in
+                if let problem { self?.statusLine.title = problem; return }
+                MLXServeStore.shared.autoSelect { self?.checkModelStatusOnly() }
+            }
+            return
+        }
         if Settings.backend == "embedded" {
             if GGUFStore.activePath == nil, let first = GGUFStore.shared.list().first {
                 Settings.embeddedModel = first.name   // auto-select an installed model

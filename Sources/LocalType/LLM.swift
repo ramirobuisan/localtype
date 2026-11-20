@@ -34,6 +34,18 @@ final class LLM {
         }
         if !header.isEmpty { header += "\n" }
 
+        if Settings.backend == "mlxserve" {
+            guard let req = MLXServeCompletion.request(context: header, text: prefix, maxTokens: Settings.maxTokens) else {
+                return completion(nil)
+            }
+            task = session.dataTask(with: req) { data, _, error in
+                guard error == nil, let data, let reply = MLXServeCompletion.parse(data) else { return completion(nil) }
+                completion(MLXServeCompletion.join(reply, after: prefix))
+            }
+            task?.resume()
+            return
+        }
+
         if Settings.backend == "embedded" {
             guard let path = GGUFStore.activePath else { return completion(nil) }
             LlamaEngine.shared.complete(path: path, prompt: header + prefix, maxTokens: Settings.maxTokens, completion: completion)

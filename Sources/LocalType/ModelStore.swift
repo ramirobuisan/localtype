@@ -5,6 +5,8 @@ protocol ModelStore: AnyObject {
     var catalog: [(id: String, note: String)] { get }
     var placeholder: String { get }
     var canImport: Bool { get }
+    var canDownload: Bool { get }
+    var canDelete: Bool { get }
     var isBusy: Bool { get }
     var activeName: String { get set }
     func prepare(_ done: @escaping (String?) -> Void)          // nil = ready, else message
@@ -20,6 +22,8 @@ final class EmbeddedStore: ModelStore {
     var catalog: [(id: String, note: String)] { GGUFStore.catalog.map { ($0.file, $0.note) } }
     let placeholder = "Pick a model, or paste an https://…/model.gguf URL"
     let canImport = true
+    let canDownload = true
+    let canDelete = true
     var isBusy: Bool { GGUFStore.shared.isBusy }
     var activeName: String {
         get { Settings.embeddedModel }
@@ -44,6 +48,8 @@ final class OllamaStore: ModelStore {
     var catalog: [(id: String, note: String)] { ModelManager.recommended.map { ($0.name, $0.note) } }
     let placeholder = "Pick or type a model, e.g. qwen2.5:3b"
     let canImport = false
+    let canDownload = true
+    let canDelete = true
     var isBusy: Bool { ModelManager.shared.pulling != nil }
     var activeName: String {
         get { Settings.model }
@@ -65,4 +71,10 @@ final class OllamaStore: ModelStore {
     func delete(_ name: String, _ done: @escaping (Bool) -> Void) { ModelManager.shared.delete(name, done) }
 }
 
-func currentStore() -> ModelStore { Settings.backend == "embedded" ? EmbeddedStore.shared : OllamaStore.shared }
+func currentStore() -> ModelStore {
+    switch Settings.backend {
+    case "embedded": return EmbeddedStore.shared
+    case "mlxserve": return MLXServeStore.shared
+    default: return OllamaStore.shared
+    }
+}

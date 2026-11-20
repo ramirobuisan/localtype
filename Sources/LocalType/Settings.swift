@@ -16,10 +16,20 @@ enum Settings {
         get { d.string(forKey: "model") ?? "qwen2.5:3b" }
         set { d.set(newValue, forKey: "model"); notify() }
     }
-    /// "embedded" = built-in llama.cpp engine, "ollama" = external Ollama server.
+    /// "mlxserve" = MLX-Serve app (default when installed), "embedded" = built-in llama.cpp engine,
+    /// "ollama" = external Ollama server.
     static var backend: String {
-        get { d.string(forKey: "backend") ?? "embedded" }
+        get { d.string(forKey: "backend") ?? (MLXServeStore.installed ? "mlxserve" : "embedded") }
         set { d.set(newValue, forKey: "backend"); notify() }
+    }
+    static var mlxEndpoint: String {
+        get { d.string(forKey: "mlxEndpoint") ?? "http://127.0.0.1:11234" }
+        set { d.set(newValue, forKey: "mlxEndpoint") }
+    }
+    /// Model id in MLX-Serve (as listed by /v1/models).
+    static var mlxModel: String {
+        get { d.string(forKey: "mlxModel") ?? "" }
+        set { d.set(newValue, forKey: "mlxModel"); notify() }
     }
     /// GGUF file name (inside ~/Library/Application Support/LocalType/Models) for the embedded engine.
     static var embeddedModel: String {
@@ -151,11 +161,11 @@ enum Settings {
     }
     private static func setShortcut(_ key: String, _ v: Shortcut?) { d.set(v?.string ?? "", forKey: key) }
     static var keyAcceptAll: Shortcut? {
-        get { shortcut("keyAcceptAll", Shortcut(code: 48, flags: [], label: "⇥")) }
+        get { shortcut("keyAcceptAll", Shortcut(code: 48, flags: .option, label: "⇥")) }
         set { setShortcut("keyAcceptAll", newValue) }
     }
     static var keyAcceptWord: Shortcut? {
-        get { shortcut("keyAcceptWord", Shortcut(code: 48, flags: .option, label: "⇥")) }
+        get { shortcut("keyAcceptWord", Shortcut(code: 48, flags: [], label: "⇥")) }
         set { setShortcut("keyAcceptWord", newValue) }
     }
     static var keyForce: Shortcut? {

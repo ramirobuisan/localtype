@@ -281,8 +281,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                        get: { Settings.showMenuBarIcon }, set: { Settings.showMenuBarIcon = $0 }),
             ]),
             section("AI Settings", [
-                row("AI model", Settings.backend == "embedded"
-                    ? "Built-in engine — runs entirely inside the app." : "Using Ollama at \(Settings.endpoint).", modelPopup),
+                row("AI model", Settings.backend == "embedded" ? "Built-in engine — runs entirely inside the app."
+                    : Settings.backend == "mlxserve" ? "MLX-Serve at \(Settings.mlxEndpoint). Smaller models answer faster."
+                    : "Using Ollama at \(Settings.endpoint).", modelPopup),
                 button("Model files", "Open the folder containing downloaded models.", "Reveal in Finder") {
                     NSWorkspace.shared.open(GGUFStore.directory)
                 },
@@ -308,7 +309,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             ]),
             section("Emoji", [
                 toggle("Emoji completion",
-                       "Type a colon and part of a name, like :fire or :thumbs_up, to get an emoji. The accept key inserts it; the next-word key shows the next match. Emoji you use often come first.",
+                       "Type a colon and part of a name, like :fire or :thumbs_up, to get an emoji. Tab inserts it; ↓ and ↑ show the other matches. Emoji you use often come first.",
                        get: { Settings.emojiCompletion }, set: { Settings.emojiCompletion = $0 }),
             ]),
             section("Autocorrect", [
@@ -403,10 +404,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private func shortcuts() -> [NSView] {
         [
             section(nil, [
-                recorder("Trigger full completion", "Accepts the entire completion at once. Default: Tab.",
+                recorder("Trigger full completion", "Accepts the entire completion at once. Default: ⌥Tab.",
                          get: { Settings.keyAcceptAll }, set: { Settings.keyAcceptAll = $0 }),
                 recorder("Complete only the next word",
-                         "Press repeatedly to insert only the first few words, then resume typing yourself. Surprisingly effective in practice.",
+                         "Each press inserts one more word, so you take exactly as much as you want and keep typing. Default: Tab.",
                          get: { Settings.keyAcceptWord }, set: { Settings.keyAcceptWord = $0 }),
                 toggle("Include trailing space", "Accepting a single word also inserts the space after it.", indent: true,
                        get: { Settings.includeTrailingSpace }, set: { Settings.includeTrailingSpace = $0 }),

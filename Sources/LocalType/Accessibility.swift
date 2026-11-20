@@ -103,6 +103,10 @@ enum AX {
                 x = r.minX; top = r.minY; height = r.height
             } else if caret < text.length, text.character(at: caret) != 10, let r = bounds(el, caret, 1), isBelow(r) {
                 x = r.minX; top = r.minY; height = r.height
+            } else if let r = bounds(el, caret, 0), let p = prevLine {
+                // NSTextView (TextEdit, Mail…) reports an empty last line's insertion point at the left margin
+                // but on the line above; the caret really is one line further down.
+                x = r.minX; top = p.maxY; height = p.height
             } else {
                 return nil   // empty last line and the app reports no insertion-point bounds
             }

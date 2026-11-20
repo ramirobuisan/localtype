@@ -68,13 +68,16 @@ final class Controller {
             DispatchQueue.main.async { self.dismiss(); self.trigger(force: true) }
             return nil
         }
+        let isAcceptWord = Settings.keyAcceptWord?.matches(code: code, cgFlags: cg) == true
+        let isAcceptAll = Settings.keyAcceptAll?.matches(code: code, cgFlags: cg) == true
         if let e = emoji {
-            if let k = Settings.keyAcceptAll, k.matches(code: code, cgFlags: cg) {
+            if isAcceptWord || isAcceptAll {
                 acceptEmoji(e.items[e.index], delete: e.delete)
                 return nil
             }
-            if e.items.count > 1, let k = Settings.keyAcceptWord, k.matches(code: code, cgFlags: cg) {
-                let next = (e.index + 1) % e.items.count
+            // ↓ / ↑ step through the other matches; arrows reach the app again once the emoji is gone.
+            if e.items.count > 1, flags.isEmpty, code == 125 || code == 126 {
+                let next = (e.index + (code == 125 ? 1 : e.items.count - 1)) % e.items.count
                 emoji?.index = next
                 suggestion = e.items[next].char
                 overlay.showEmoji(e.items, selected: next, at: e.caret)
@@ -82,12 +85,17 @@ final class Controller {
             }
         }
         if let s = suggestion {
-            if let k = Settings.keyAcceptAll, k.matches(code: code, cgFlags: cg) {
-                if let n = fixDelete { applyFix(delete: n, with: s) } else { accept(s) }
+            if let n = fixDelete, isAcceptWord || isAcceptAll {
+                applyFix(delete: n, with: s)
                 return nil
             }
-            if fixDelete == nil, emoji == nil, let k = Settings.keyAcceptWord, k.matches(code: code, cgFlags: cg) {
+            // Word first: one press of the word key inserts one word, even if both keys are set the same.
+            if isAcceptWord {
                 acceptWord(s)
+                return nil
+            }
+            if isAcceptAll {
+                accept(s)
                 return nil
             }
             if code == 53 && flags.isEmpty {   // Esc: clear the suggestion; the app doesn't see this press
@@ -175,7 +183,10 @@ final class Controller {
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
                 guard let raw else {
-                    if Settings.backend == "ollama", !self.lastError { self.lastError = true; self.onStatus?("Ollama unreachable") }
+                    if Settings.backend != "embedded", !self.lastError {
+                        self.lastError = true
+                        self.onStatus?(Settings.backend == "mlxserve" ? "MLX-Serve unreachable" : "Ollama unreachable")
+                    }
                     return
                 }
                 if self.lastError { self.lastError = false; self.onStatus?("Ready") }

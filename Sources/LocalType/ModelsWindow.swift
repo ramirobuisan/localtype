@@ -4,7 +4,9 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
     static let shared = ModelsWindow()
 
     private var window: NSWindow?
-    private let source = NSSegmentedControl(labels: ["Built-in engine", "Ollama"], trackingMode: .selectOne, target: nil, action: nil)
+    private static let backends = ["mlxserve", "embedded", "ollama"]
+    private let source = NSSegmentedControl(labels: ["MLX-Serve", "Built-in engine", "Ollama"], trackingMode: .selectOne, target: nil, action: nil)
+    private var downloadViews: [NSView] = []
     private let table = NSTableView()
     private let picker = NSComboBox()
     private let download = NSButton(title: "Download", target: nil, action: nil)
@@ -22,7 +24,7 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
 
     func show() {
         if window == nil { build() }
-        source.selectedSegment = Settings.backend == "embedded" ? 0 : 1
+        source.selectedSegment = ModelsWindow.backends.firstIndex(of: Settings.backend) ?? 0
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         reloadSource()
@@ -75,7 +77,9 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
         func header(_ s: String) -> NSTextField {
             let l = NSTextField(labelWithString: s); l.font = .boldSystemFont(ofSize: 12); return l
         }
-        let stack = NSStackView(views: [source, header("Installed"), sv, rowBtns, header("Download a model"), dl, bar, status])
+        let dlHeader = header("Download a model")
+        downloadViews = [dlHeader, dl]
+        let stack = NSStackView(views: [source, header("Installed"), sv, rowBtns, dlHeader, dl, bar, status])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -96,8 +100,8 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
     }
 
     @objc private func sourceChanged() {
-        Settings.backend = source.selectedSegment == 0 ? "embedded" : "ollama"
-        if Settings.backend == "ollama" { LlamaEngine.shared.unload() }
+        Settings.backend = ModelsWindow.backends[max(0, source.selectedSegment)]
+        if Settings.backend != "embedded" { LlamaEngine.shared.unload() }
         reloadSource()
     }
 
@@ -107,6 +111,9 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
         picker.stringValue = ""
         picker.placeholderString = store.placeholder
         importBtn.isHidden = !store.canImport
+        delBtn.isHidden = !store.canDelete
+        for v in downloadViews { v.isHidden = !store.canDownload }
+        window?.setContentSize((window?.contentView?.subviews.first?.fittingSize) ?? .zero)
         refresh()
     }
 

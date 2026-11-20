@@ -37,10 +37,10 @@ final class Overlay {
         let font = NSFont.systemFont(ofSize: Overlay.fontSize(caret))
         let color: NSColor = isFix ? .systemOrange : .secondaryLabelColor
         present(NSAttributedString(string: isFix ? "✎ " + text : text, attributes: [.font: font, .foregroundColor: color]),
-                hint: Settings.keyAcceptAll?.display ?? "⇥", at: caret)
+                hint: (Settings.keyAcceptWord ?? Settings.keyAcceptAll)?.display ?? "⇥", at: caret)
     }
 
-    /// The selected emoji and its name, followed by the other matches; the next-word key cycles through them.
+    /// The selected emoji and its name, followed by the other matches; ↓ / ↑ cycle through them.
     func showEmoji(_ items: [Emoji.Item], selected: Int, at caret: NSRect) {
         let size = Overlay.fontSize(caret)
         let s = NSMutableAttributedString()
@@ -52,9 +52,8 @@ final class Overlay {
             s.append(NSAttributedString(string: "   " + others.joined(separator: " "), attributes: [
                 .font: NSFont.systemFont(ofSize: size * 0.8), .foregroundColor: NSColor.tertiaryLabelColor]))
         }
-        let accept = Settings.keyAcceptAll?.display ?? "⇥"
-        let next = Settings.keyAcceptWord.map { " · \($0.display) next" } ?? ""
-        present(s, hint: others.isEmpty ? accept : accept + next, at: caret)
+        let accept = (Settings.keyAcceptWord ?? Settings.keyAcceptAll)?.display ?? "⇥"
+        present(s, hint: others.isEmpty ? accept : accept + " · ↓ next", at: caret)
     }
 
     private func present(_ text: NSAttributedString, hint hintText: String, at caret: NSRect) {

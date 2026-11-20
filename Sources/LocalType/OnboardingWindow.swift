@@ -61,7 +61,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         styleScroll.heightAnchor.constraint(equalToConstant: 64).isActive = true
 
         let tips = NSTextField(wrappingLabelWithString:
-            "Using it: type in any app and pause briefly. ⇥ accepts the suggestion, ⌥⇥ accepts one word, Esc dismisses. Type :name for an emoji. The menu-bar icon (a text cursor) has Settings and Models.")
+            "Using it: type in any app and pause briefly. Each ⇥ accepts one word, ⌥⇥ accepts the whole suggestion, Esc dismisses. Type :name for an emoji (↓ for other matches). The menu-bar icon (a text cursor) has Settings and Models.")
         tips.font = .systemFont(ofSize: 11)
         tips.textColor = .secondaryLabelColor
 
@@ -74,7 +74,7 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         let views: [NSView] = [
             title, intro,
             step("1", "Accessibility access", "Lets LocalType see the text before your cursor and type accepted suggestions.", axStatus, axButton),
-            step("2", "A language model", "Runs on this Mac with the built-in engine. Qwen2.5 3B is a good start (2.1 GB).", modelStatus, modelButton),
+            step("2", "A language model", OnboardingWindow.modelHint, modelStatus, modelButton),
             step("3", "Screen context (optional)", "Reads the window you're typing in with on-device text recognition so replies fit the conversation. Needs Screen Recording permission.", screenStatus, screenSwitch),
             step("4", "Emoji completion (optional)", "Type :fire or :thumbs_up to get 🔥 or 👍.", nil, emojiSwitch),
             howTitle,
@@ -109,6 +109,14 @@ final class OnboardingWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         l.font = bold ? .systemFont(ofSize: 13, weight: .semibold) : .systemFont(ofSize: 11)
         if !bold { l.textColor = .secondaryLabelColor }
         return l
+    }
+
+    private static var modelHint: String {
+        switch Settings.backend {
+        case "mlxserve": return "Uses a chat model from MLX-Serve; nothing is downloaded. Smaller models answer faster."
+        case "ollama": return "Uses a model from your Ollama server."
+        default: return "Runs on this Mac with the built-in engine. Qwen2.5 3B is a good start (2.1 GB)."
+        }
     }
 
     private func step(_ n: String, _ title: String, _ desc: String, _ status: NSTextField?, _ control: NSView) -> NSView {
