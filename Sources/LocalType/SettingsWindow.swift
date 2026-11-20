@@ -6,28 +6,81 @@ private final class Trampoline: NSObject {
     @objc func fire(_ sender: Any?) { f(sender) }
 }
 
+/// Grouped "card" like System Settings: soft fill, hairline border, rounded corners.
 private final class CardView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
     }
     required init?(coder: NSCoder) { fatalError() }
-    override func updateLayer() {
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6).cgColor
-    }
     override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = (dark ? NSColor(white: 1, alpha: 0.055) : NSColor(white: 1, alpha: 0.9)).cgColor
+        layer?.borderColor = (dark ? NSColor(white: 1, alpha: 0.07) : NSColor(white: 0, alpha: 0.07)).cgColor
+    }
+}
+
+/// Hairline divider inside a card, inset to line up with the row text.
+private final class Divider: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        heightAnchor.constraint(equalToConstant: 1).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = (dark ? NSColor(white: 1, alpha: 0.08) : NSColor(white: 0, alpha: 0.08)).cgColor
+    }
 }
 
 private final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
+/// Colored rounded-square icon with a white symbol, as in System Settings' sidebar.
+func iconTile(_ symbol: String, _ color: NSColor, size: CGFloat) -> NSImage {
+    NSImage(size: NSSize(width: size, height: size), flipped: false) { r in
+        let path = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: size * 0.235, yRadius: size * 0.235)
+        let top = color.blended(withFraction: 0.18, of: .white) ?? color
+        NSGradient(starting: top, ending: color)?.draw(in: path, angle: -90)
+        // Monochrome symbol tinted white (palette mode fills some symbols' background layers).
+        let cfg = NSImage.SymbolConfiguration(pointSize: size * 0.5, weight: .semibold)
+        if let sym = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            let s = sym.size
+            let white = NSImage(size: s, flipped: false) { b in
+                sym.draw(in: b)
+                NSColor.white.set()
+                b.fill(using: .sourceAtop)
+                return true
+            }
+            white.draw(in: NSRect(x: (r.width - s.width) / 2, y: (r.height - s.height) / 2, width: s.width, height: s.height))
+        }
+        return true
+    }
+}
+
 final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     static let shared = SettingsWindow()
 
-    private let pages = ["Setup", "General", "Context", "Personalization", "Emoji", "Shortcuts", "Battery", "App Settings",
-                         "Labs", "Statistics", "About"]
-    private let symbols = ["checkmark.seal", "gearshape", "text.viewfinder", "wand.and.stars", "face.smiling", "command", "battery.100",
-                           "slider.horizontal.3", "flask", "chart.bar", "info.circle"]
+    private struct Page { let name: String; let symbol: String; let color: NSColor; let blurb: String }
+    private let pageInfo: [Page] = [
+        Page(name: "Setup", symbol: "checkmark", color: .systemBlue, blurb: "Permissions and everything LocalType needs to work well."),
+        Page(name: "General", symbol: "gearshape.fill", color: .systemGray, blurb: "When and how suggestions appear, and which model writes them."),
+        Page(name: "Context", symbol: "text.viewfinder", color: .systemTeal, blurb: "What LocalType may look at so suggestions fit what you're doing."),
+        Page(name: "Personalization", symbol: "wand.and.stars", color: .systemPurple, blurb: "Make suggestions sound like you."),
+        Page(name: "Emoji", symbol: "face.smiling", color: .systemYellow, blurb: "Emoji from :names and text emoticons."),
+        Page(name: "Shortcuts", symbol: "command", color: .systemIndigo, blurb: "Keys to accept, dismiss and control suggestions."),
+        Page(name: "Battery", symbol: "battery.100percent", color: .systemGreen, blurb: "Save power when your Mac isn't plugged in."),
+        Page(name: "App Settings", symbol: "square.grid.2x2.fill", color: .systemPink, blurb: "Turn LocalType on or off for specific apps and websites."),
+        Page(name: "Labs", symbol: "flask.fill", color: .systemOrange, blurb: "Experimental features: useful, but less polished than the rest."),
+        Page(name: "Statistics", symbol: "chart.bar.fill", color: .systemCyan, blurb: "What LocalType has typed for you. Stored only on this Mac."),
+        Page(name: "About", symbol: "info", color: .systemGray, blurb: "Version, updates and credits."),
+    ]
+    private var pages: [String] { pageInfo.map(\.name) }
 
     private var window: NSWindow?
     private let sidebar = NSTableView()
@@ -56,53 +109,104 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     // MARK: Window
 
+    /// Standard sidebar layout (NSSplitViewController): full-height translucent sidebar, unified title bar.
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
-                         styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        w.title = "LocalType Settings"
-        w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 700, height: 420)
-        w.delegate = self
-        w.center()
-
-        let col = NSTableColumn(identifier: .init("s")); col.width = 160
+        let sidebarVC = NSViewController()
+        let col = NSTableColumn(identifier: .init("s"))
         sidebar.addTableColumn(col)
         sidebar.headerView = nil
         sidebar.style = .sourceList
-        sidebar.rowHeight = 30
+        sidebar.rowHeight = 32
+        sidebar.intercellSpacing = NSSize(width: 0, height: 2)
         sidebar.dataSource = self
         sidebar.delegate = self
-
-        let cv = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 600))
-        let sbScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 180, height: 600))
-        sbScroll.autoresizingMask = [.height]
+        let sbScroll = NSScrollView()
         sbScroll.documentView = sidebar
         sbScroll.drawsBackground = false
         sbScroll.hasVerticalScroller = false
+        sidebarVC.view = sbScroll
 
-        scroll.frame = NSRect(x: 180, y: 0, width: 640, height: 600)
-        scroll.autoresizingMask = [.width, .height]
+        let contentVC = NSViewController()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = true
+        contentVC.view = scroll
 
-        cv.addSubview(sbScroll); cv.addSubview(scroll)
-        w.contentView = cv
-        w.setContentSize(NSSize(width: 820, height: 600))
+        let split = NSSplitViewController()
+        let sbItem = NSSplitViewItem(sidebarWithViewController: sidebarVC)
+        sbItem.canCollapse = false
+        sbItem.minimumThickness = 210
+        sbItem.maximumThickness = 210
+        let contentItem = NSSplitViewItem(viewController: contentVC)
+        contentItem.minimumThickness = 520
+        contentItem.titlebarSeparatorStyle = .automatic   // a line only once content scrolls under the title bar
+        sbItem.titlebarSeparatorStyle = .none
+        split.addSplitViewItem(sbItem)
+        split.addSplitViewItem(contentItem)
+
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 640),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                         backing: .buffered, defer: false)
+        w.contentViewController = split
+        w.title = "LocalType Settings"
+        w.titleVisibility = .hidden            // each page shows its own header
+        w.toolbar = NSToolbar(identifier: "settings")
+        w.toolbarStyle = .unifiedCompact
+        w.titlebarSeparatorStyle = .automatic
+        w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 760, height: 460)
+        w.setContentSize(NSSize(width: 860, height: 640))
+        w.delegate = self
+        w.center()
+        w.setFrameAutosaveName("LocalTypeSettings")
         window = w
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { pages.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { pageInfo.count }
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
-        let img = NSImageView(image: NSImage(systemSymbolName: symbols[row], accessibilityDescription: nil) ?? NSImage())
-        img.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        let l = NSTextField(labelWithString: pages[row])
-        let s = NSStackView(views: [img, l]); s.spacing = 8; s.alignment = .centerY
-        return s
+        let p = pageInfo[row]
+        let cell = NSTableCellView()
+        let img = NSImageView(image: iconTile(p.symbol, p.color, size: 22))
+        let label = NSTextField(labelWithString: p.name)
+        label.font = .systemFont(ofSize: 13)
+        label.lineBreakMode = .byTruncatingTail
+        cell.imageView = img
+        cell.textField = label     // NSTableCellView turns it white on the selected row
+        for v in [img, label] { v.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(v) }
+        NSLayoutConstraint.activate([
+            img.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            img.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            img.widthAnchor.constraint(equalToConstant: 22), img.heightAnchor.constraint(equalToConstant: 22),
+            label.leadingAnchor.constraint(equalTo: img.trailingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
     }
     func tableViewSelectionDidChange(_ n: Notification) { if sidebar.selectedRow >= 0 { select(sidebar.selectedRow) } }
 
+    /// Icon, title and one-line description at the top of each page.
+    private func header(_ p: Page) -> NSView {
+        let img = NSImageView(image: iconTile(p.symbol, p.color, size: 38))
+        img.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        img.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        let title = NSTextField(labelWithString: p.name)
+        title.font = .systemFont(ofSize: 20, weight: .bold)
+        let blurb = NSTextField(wrappingLabelWithString: p.blurb)
+        blurb.font = .systemFont(ofSize: 12)
+        blurb.textColor = .secondaryLabelColor
+        let texts = NSStackView(views: [title, blurb])
+        texts.orientation = .vertical; texts.alignment = .leading; texts.spacing = 2
+        let h = NSStackView(views: [img, texts])
+        h.alignment = .centerY; h.spacing = 12
+        h.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 4, right: 0)
+        return h
+    }
+
     private func select(_ i: Int) {
         retained = []; textBindings = [:]
+        window?.title = pageInfo[i].name
+        window?.subtitle = ""
         var sections: [NSView]
         switch pages[i] {
         case "Setup": sections = setup()
@@ -117,28 +221,35 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         case "App Settings": sections = appSettings()
         default: sections = statistics()
         }
-        let stack = NSStackView(views: sections)
+        let all = [header(pageInfo[i])] + sections
+        let stack = NSStackView(views: all)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 18
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.spacing = 22
+        stack.setCustomSpacing(18, after: all[0])
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 0, bottom: 28, right: 0)
         stack.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(stack)
         scroll.documentView = doc
         let clip = scroll.contentView
+        // A centered column: comfortable to read on a wide window, filling a narrow one.
+        let fill = stack.widthAnchor.constraint(equalTo: doc.widthAnchor, constant: -56)
+        fill.priority = .defaultHigh
         NSLayoutConstraint.activate([
             doc.topAnchor.constraint(equalTo: clip.topAnchor),
             doc.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
             doc.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
             stack.topAnchor.constraint(equalTo: doc.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+            stack.centerXAnchor.constraint(equalTo: doc.centerXAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
+            fill,
         ])
-        for v in sections { v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true }
-        scroll.contentView.scroll(to: .zero)
+        for v in all { v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: -scroll.contentInsets.top))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     // MARK: Row builders
@@ -146,36 +257,45 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private func action(_ f: @escaping (Any?) -> Void) -> Trampoline { let t = Trampoline(f); retained.append(t); return t }
 
     private func row(_ title: String, _ desc: String?, _ control: NSView?, indent: Bool = false) -> NSView {
-        let t = NSTextField(labelWithString: title)
+        let t = NSTextField(wrappingLabelWithString: title)
         t.font = .systemFont(ofSize: 13)
         var labels: [NSView] = [t]
         if let desc {
             let d = NSTextField(wrappingLabelWithString: desc)
             d.font = .systemFont(ofSize: 11)
             d.textColor = .secondaryLabelColor
-            d.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             labels.append(d)
         }
+        for l in labels { l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let left = NSStackView(views: labels)
         left.orientation = .vertical; left.alignment = .leading; left.spacing = 3
+        left.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         var views: [NSView] = [left]
         if let control {
-            let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
             control.setContentHuggingPriority(.required, for: .horizontal)
             control.setContentCompressionResistancePriority(.required, for: .horizontal)
-            views += [spacer, control]
+            // Long labels (model names) shouldn't squeeze the description into a sliver.
+            if control is NSPopUpButton { control.widthAnchor.constraint(lessThanOrEqualToConstant: 270).isActive = true }
+            views += [control]
         }
         let h = NSStackView(views: views)
-        h.orientation = .horizontal; h.alignment = .centerY; h.spacing = 12
-        h.edgeInsets = NSEdgeInsets(top: 10, left: indent ? 36 : 14, bottom: 10, right: 14)
+        h.orientation = .horizontal; h.alignment = .centerY; h.spacing = 16
+        h.distribution = .fill
+        h.edgeInsets = NSEdgeInsets(top: 9, left: indent ? 34 : 14, bottom: 9, right: 14)
+        h.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
         return h
     }
 
     private func card(_ rows: [NSView]) -> NSView {
         var views: [NSView] = []
         for (i, r) in rows.enumerated() {
-            if i > 0 { let sep = NSBox(); sep.boxType = .separator; views.append(sep) }
+            if i > 0 {
+                let d = Divider()
+                let wrap = NSStackView(views: [d])
+                wrap.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+                d.widthAnchor.constraint(equalTo: wrap.widthAnchor, constant: -28).isActive = true
+                views.append(wrap)
+            }
             views.append(r)
         }
         let s = NSStackView(views: views)
@@ -185,8 +305,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         s.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(s)
         NSLayoutConstraint.activate([
-            s.topAnchor.constraint(equalTo: box.topAnchor),
-            s.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+            s.topAnchor.constraint(equalTo: box.topAnchor, constant: 2),
+            s.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -2),
             s.leadingAnchor.constraint(equalTo: box.leadingAnchor),
             s.trailingAnchor.constraint(equalTo: box.trailingAnchor),
         ])
@@ -197,13 +317,16 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         var views: [NSView] = []
         if let title {
             let l = NSTextField(labelWithString: title)
-            l.font = .boldSystemFont(ofSize: 12); l.textColor = .secondaryLabelColor
-            views.append(l)
+            l.font = .systemFont(ofSize: 13, weight: .semibold)
+            l.textColor = .labelColor
+            let wrap = NSStackView(views: [l])
+            wrap.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0)
+            views.append(wrap)
         }
         let c = card(rows)
         views.append(c)
         let s = NSStackView(views: views)
-        s.orientation = .vertical; s.alignment = .leading; s.spacing = 6
+        s.orientation = .vertical; s.alignment = .leading; s.spacing = 8
         c.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
         return s
     }
@@ -211,14 +334,25 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private func toggle(_ title: String, _ desc: String?, indent: Bool = false, get: @escaping () -> Bool,
                         set: @escaping (Bool) -> Void) -> NSView {
         let sw = NSSwitch()
+        sw.controlSize = .small
         sw.state = get() ? .on : .off
         sw.target = action { s in set((s as? NSSwitch)?.state == .on) }
         sw.action = #selector(Trampoline.fire(_:))
         return row(title, desc, sw, indent: indent)
     }
 
-    private func popup(_ title: String, _ desc: String?, items: [String], selected: Int, set: @escaping (Int) -> Void) -> NSView {
+    /// Borderless pop-up with chevrons, as in System Settings.
+    private func styledPopup() -> NSPopUpButton {
         let p = NSPopUpButton()
+        p.isBordered = false
+        (p.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtBottom
+        p.font = .systemFont(ofSize: 13)
+        (p.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingMiddle
+        return p
+    }
+
+    private func popup(_ title: String, _ desc: String?, items: [String], selected: Int, set: @escaping (Int) -> Void) -> NSView {
+        let p = styledPopup()
         p.addItems(withTitles: items)
         p.selectItem(at: max(0, min(selected, items.count - 1)))
         p.target = action { s in set((s as? NSPopUpButton)?.indexOfSelectedItem ?? 0) }
@@ -228,7 +362,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private func button(_ title: String, _ desc: String?, _ label: String, _ f: @escaping () -> Void) -> NSView {
         let b = NSButton(title: label, target: action { _ in f() }, action: #selector(Trampoline.fire(_:)))
-        b.bezelStyle = .rounded
+        b.bezelStyle = .push
+        b.controlSize = .regular
         return row(title, desc, b)
     }
 
@@ -311,8 +446,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private func about() -> [NSView] {
-        let icon = NSImageView(image: NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil) ?? NSImage())
-        icon.symbolConfiguration = .init(pointSize: 34, weight: .regular)
+        let icon = NSImageView(image: iconTile("text.cursor", .systemIndigo, size: 64))
+        icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
         let name = NSTextField(labelWithString: "LocalType \(Updates.current)")
         name.font = .systemFont(ofSize: 20, weight: .semibold)
         let sub = NSTextField(wrappingLabelWithString: "Build \(Updates.build). On-device autocomplete for any Mac app. An independent project, not affiliated with Cotypist.")
@@ -389,9 +525,6 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         statusRow.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
 
         return [
-            section(nil, [
-                row("Experimental features", "They work well enough to use, but are less polished than the rest of LocalType.", nil),
-            ]),
             section("Alternative Words", [
                 popup("Show alternative suggestions",
                       "Offers other ways to continue under the cursor, either after a short pause on a suggestion or when you press the shortcut. Press 1–5 to insert one. Meant for the occasional wording hiccup, not for every word." + (chatNote.map { " " + $0 } ?? ""),
@@ -493,7 +626,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private func general() -> [NSView] {
         let store = currentStore()
-        let modelPopup = NSPopUpButton()
+        let modelPopup = styledPopup()
         let fill = { (list: [InstalledModel]?) in
             modelPopup.removeAllItems()
             let names = (list ?? []).map { $0.name }
@@ -513,13 +646,19 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         store.list { list in
             guard let rec = recommendedModel(list ?? [], backend: Settings.backend) else { return }
             let active = store.isActive(rec)
-            recommendation.stringValue = active ? "★ You're using the model recommended for your Mac." : "★ Recommended for your Mac: \(rec)"
+            recommendation.stringValue = active ? "You're using the model recommended for your Mac." : "Recommended for your Mac: \(rec)"
             useRecommended.isHidden = active
             useRecommended.target = self.action { _ in store.activeName = rec; self.reload() }
             useRecommended.action = #selector(Trampoline.fire(_:))
         }
-        let recRow = NSStackView(views: [recommendation, NSView(), useRecommended])
-        recRow.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 10, right: 14)
+        let star = NSImageView(image: NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil) ?? NSImage())
+        star.contentTintColor = .systemYellow
+        star.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+        recommendation.stringValue = recommendation.stringValue.replacingOccurrences(of: "★ ", with: "")
+        recommendation.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let recRow = NSStackView(views: [star, recommendation, NSView(), useRecommended])
+        recRow.spacing = 6
+        recRow.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
         modelPopup.target = action { [weak modelPopup] _ in
             guard let p = modelPopup, let title = p.titleOfSelectedItem else { return }
             if title == "Manage models…" { ModelsWindow.shared.show(); return }
@@ -550,7 +689,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 button("Model files", "Open the folder containing downloaded models.", "Reveal in Finder") {
                     NSWorkspace.shared.open(GGUFStore.directory)
                 },
-                button("Download or import models", "Get models for the built-in engine, or switch to Ollama.", "Manage…") {
+                button("Models", "Switch between MLX-Serve, the built-in engine and Ollama, or download a model.", "Manage…") {
                     ModelsWindow.shared.show()
                 },
             ]),
@@ -699,7 +838,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private func battery() -> [NSView] {
-        let modelPopup = NSPopUpButton()
+        let modelPopup = styledPopup()
         modelPopup.addItem(withTitle: "Same as usual")
         currentStore().list { list in
             for m in list ?? [] { modelPopup.addItem(withTitle: m.name) }
@@ -762,6 +901,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private func onOffSwitch(_ on: Bool, _ set: @escaping (Bool) -> Void) -> NSSwitch {
         let sw = NSSwitch()
+        sw.controlSize = .small
         sw.state = on ? .on : .off
         sw.target = action { s in set((s as? NSSwitch)?.state == .on) }
         sw.action = #selector(Trampoline.fire(_:))
@@ -870,9 +1010,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                        get: { Settings.enabledByDefault }, set: { Settings.enabledByDefault = $0 }),
             ]),
             section("Apps", appRows),
-            NSStackView(views: [addAppBtn]),
+            NSStackView(views: [NSView(), addAppBtn]),
             section("Websites", siteRows),
-            NSStackView(views: [addSiteBtn]),
+            NSStackView(views: [NSView(), addSiteBtn]),
         ]
     }
 
@@ -883,7 +1023,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     /// A big number with a caption under it.
     private func tile(_ value: String, _ caption: String) -> NSView {
         let v = NSTextField(labelWithString: value)
-        v.font = .monospacedDigitSystemFont(ofSize: 24, weight: .semibold)
+        let base = NSFont.systemFont(ofSize: 26, weight: .semibold)
+        v.font = base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: 26) } ?? base
         let c = NSTextField(labelWithString: caption)
         c.font = .systemFont(ofSize: 11); c.textColor = .secondaryLabelColor
         let st = NSStackView(views: [v, c]); st.orientation = .vertical; st.alignment = .leading; st.spacing = 2
@@ -903,7 +1044,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         chart.data = Stats.shared.series(span: statsSpan, grouping: statsGrouping, metric: statsMetric)
         let sum = Stats.shared.summary(span: statsSpan, metric: statsMetric)
         func picker(_ items: [String], _ sel: Int, _ f: @escaping (Int) -> Void) -> NSPopUpButton {
-            let p = NSPopUpButton()
+            let p = self.styledPopup()
             p.addItems(withTitles: items); p.selectItem(at: sel)
             p.target = action { s in f((s as? NSPopUpButton)?.indexOfSelectedItem ?? 0); self.reload() }
             p.action = #selector(Trampoline.fire(_:))

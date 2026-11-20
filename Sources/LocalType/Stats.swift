@@ -104,6 +104,13 @@ final class BarChartView: NSView {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: labelH, width: bounds.width, height: 1).fill()
         guard !data.isEmpty else { return }
+        if data.allSatisfy({ $0.1 == 0 }) {
+            let note = "Nothing typed with LocalType in this period yet." as NSString
+            let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.tertiaryLabelColor]
+            let sz = note.size(withAttributes: a)
+            note.draw(at: NSPoint(x: (bounds.width - sz.width) / 2, y: labelH + (plot.height - sz.height) / 2), withAttributes: a)
+            return
+        }
         let slot = plot.width / CGFloat(data.count)
         let barW = max(2, min(28, slot * 0.7))
         for (i, (_, v)) in data.enumerated() where v > 0 {
