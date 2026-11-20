@@ -175,12 +175,12 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Notes", "Nos vemos mañana en la universi", nil, ["word"]),
         ("Mail", "Thanks, I really apprec", nil, ["word"]),
         ("Mail", "Could you plea", nil, ["word"]),
-        ("Mail", "I'm looking forw", nil, ["word"]),
+        ("Mail", "I'm looking forw", nil, ["word", "starts:ard"]),
         ("Notes", "Shopping list:\n- eggs\n- milk\n", nil, ["list:- "]),
         ("Notes", "Steps:\n1. Open the app\n2. Click Settings\n", nil, ["list:3. "]),
         ("Slack", "lol yeah that meeting was", nil, ["en"]),
         ("Pages", "Dear Hiring Manager,\n\nI am writing to apply for the", nil, ["en"]),
-        ("Messages", "Do you know if the train to Madrid", nil, ["en"]),
+        ("Messages", "Do you know if the train to Madrid", nil, ["en", "starts: "]),
         ("Messages", "Running a bit late, sorry! I'll be there", nil, ["en"]),
         ("Mail", "Quick update on the project: our total revenue last quarter was", nil, ["nofigures"]),
         ("Mail", "Te mando el informe por email y", nil, ["es"]),
@@ -190,6 +190,12 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Mail", "Hi Tom,\n\n", nil, ["en"]),
         ("Google Chrome on github.com", "Thanks for the PR! The changes look good, but could you", nil, ["en"]),
         ("Safari on mail.google.com", "Hola Pablo,\n\nTe adjunto", nil, ["es"]),
+        ("Google Chrome on reddit.com", "hole", nil, ["noassistant"]),
+        ("Notes", "banana", nil, ["noassistant"]),
+        ("WhatsApp", "Te llamo esta tar", nil, ["starts:de"]),
+        ("Messages", "Nos vemos esta tar", nil, ["starts:de"]),
+        ("Mail", "Mañana tengo la reu", nil, ["starts:ni"]),
+        ("Mail", "Thanks for the quick repl", nil, ["starts:y"]),
     ]
     let style = Settings.instructions
     let name = style.range(of: #"(?i)my name is ([A-ZÁÉÍÓÚÑ][\p{L}]+)"#, options: .regularExpression)
@@ -214,7 +220,12 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
                 let head = String(s.prefix { $0.isLetter })
                 if s.hasPrefix(" ") || head.isEmpty || !Spelling.isWord(tail + head) { bad.append("half-typed word not finished") }
             case "nofigures": if t.range(of: #"[$€£%]|\d{3,}"#, options: .regularExpression) != nil { bad.append("invented figure") }
+            case "noassistant":
+                if ChatCompletion.dropAssistantReply(t, prefix: c.1).isEmpty || t.range(of: #"(?i)^(sure|here|i'm|i am|sorry|could you|can you|what)\b"#, options: .regularExpression) != nil {
+                    bad.append("talks to the user")
+                }
             default:
+                if k.hasPrefix("starts:"), !s.hasPrefix(String(k.dropFirst(7))) { bad.append("wrong word (want \(k.dropFirst(7))…)") }
                 if k.hasPrefix("list:"), !t.hasPrefix(String(k.dropFirst(5))) { bad.append("list marker") }
                 if k.hasPrefix("screen:"), t.range(of: String(k.dropFirst(7)), options: [.regularExpression, .caseInsensitive]) == nil { bad.append("ignored screen") }
             }
@@ -239,16 +250,16 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
     RunLoop.main.run()
 }
 
-// Half-typed words: LocalType --selftest-halfwords ["text" …] — for each text, what the first press of the word key
+// Half-typed words: LocalType --selftest-halfwords ["text" …] (LT_PLACE="Safari on reddit.com" sets the app) — for each text, what the first press of the word key
 // would insert (typo fix or model suggestion), flagging a space inside the word being finished.
 if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-halfwords" {
     var texts = Array(CommandLine.arguments.dropFirst(2)).filter { !$0.hasPrefix("-") }
     if texts.isEmpty {
-        texts = ["Nos vemos mañana en la universi", "Te escribo para con", "Muchas gracias por tu ayu", "Hasta mañ",
+        texts = ["Nos vemos mañana en la universi", "Muchas gracias por tu ayu", "Hasta mañ",
                  "Quedamos el próximo vier", "Te mando el docu", "Perfecto, lo reviso esta tar", "Un sal",
                  "Me parece buena ide", "Necesito que me confir", "I'll send you the docum", "Thanks, I really apprec",
                  "See you tomor", "Could you plea", "Let me know if you have any ques", "I'm looking forw",
-                 "Vamos mañana al par", "Te llamo esta tar"]
+                 "Vamos mañana al par", "Te llamo esta tar", "Nos vemos esta tar", "Mañana tengo la reu"]
     }
     var bad = 0
     // The join rule with fixed replies (text, reply, expected suggestion).
@@ -262,12 +273,16 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
         ("I'll send the docum", "ents today", "ents today"),
         ("Thanks for the update", "Talk soon", " Talk soon"),
         ("Te escribo para con", "firmar el contrato", "firmar el contrato"),
-        ("Te llamo esta tar", "che", "de che"),
+        ("Te llamo esta tar", "che", "de"),
         ("Could you plea", "sease let me know", ""),
         ("I'll be there in", "five minutes", " five minutes"),
         ("We should meet some", "time next week", "time next week"),
         ("ok sounds good", "see you then", " see you then"),
         ("Hi there", "Ramiro here", " Ramiro here"),
+        ("Te llamo esta tar", "je para confirmar la reunión", "de para confirmar la reunión"),
+        ("Te llamo esta tar", "jeunta", "de"),
+        ("Thanks, I really apprec", "your help", "iate your help"),
+        ("Do you know if the train to Madrid", "is on time", " is on time"),
     ]
     for (text, reply, want) in joins {
         let got = ChatCompletion.join(reply, after: text)
@@ -296,15 +311,18 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
             return run(i + 1)
         }
         // Same path as LLM.complete, keeping the raw reply to show next to the result.
-        guard let req = ChatCompletion.request(context: "[Writing in Mail]\n\n", text: prefix, maxTokens: Settings.effectiveMaxTokens) else { exit(1) }
+        let hint = ChatCompletion.unfinishedWordHint(prefix)
+        let context = "[Writing in \(ProcessInfo.processInfo.environment["LT_PLACE"] ?? "Mail")]\n" + (hint ?? "") + "\n"
+        guard let req = ChatCompletion.request(context: context, text: prefix, maxTokens: Settings.effectiveMaxTokens) else { exit(1) }
         URLSession.shared.dataTask(with: req) { data, _, _ in
             let reply = data.flatMap(ChatCompletion.parse)
             let joined = reply.map { ChatCompletion.join($0.text, after: prefix, cut: $0.cut) } ?? ""
-            let out = ChatCompletion.dropLanguageSwitch(ChatCompletion.dropInventedFigures(joined, context: prefix), prefix: prefix)
+            let out = ChatCompletion.dropAssistantReply(ChatCompletion.dropLanguageSwitch(
+                ChatCompletion.dropInventedFigures(joined, context: context + prefix), prefix: prefix), prefix: prefix)
             DispatchQueue.main.async {
                 let text = Controller.clean(out, prefix: prefix)
                 if text.isEmpty { print("· no suggestion: …\(prefix.suffix(28))") } else { report("model", Controller.splitWord(text).word) }
-                print("    raw reply \((reply?.text ?? "nil").debugDescription)")
+                print("    raw reply \((reply?.text ?? "nil").debugDescription)\(hint.map { "  hint " + $0.trimmingCharacters(in: .newlines) } ?? "")")
                 run(i + 1)
             }
         }.resume()

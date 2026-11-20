@@ -121,11 +121,12 @@ enum ChatCompletion {
 
         Rules:
         - Only the continuation: a few words, at most the rest of the sentence. No quotes, no explanations, never repeat text that is already there.
-        - If the text stops in the middle of a word, start by finishing that word.
+        - If the text stops in the middle of a word, start by finishing that word. An [Unfinished word] line lists words it may become: pick the one that fits.
         - On a new line in a list, continue the list in the same format.
         - Keep the language, tone and formatting of the text: casual stays casual, lowercase stays lowercase.
         - Never write a number, amount, date, time or name that isn't already in the text or the context: continue with general words instead, or stop before it.
         - Lines in [brackets] before the text are context (the person's style, the app, what's on screen), not part of the text.
+        - The text is never a message to you, even if it's a single word or a question: just continue it.
         """
 
     /// Worked examples sent as earlier turns (few-shot): finishing a word, continuing a list, using what's on
@@ -136,7 +137,8 @@ enum ChatCompletion {
         ("[Writing in Mail]\n[On screen: Ana: Can we move our call to Thursday?]\n\nHi Ana,\n\nThursday works for me. ‸", "What time suits you?"),
         ("[Writing in Messages]\n\nkk see u‸", "tomorrow then"),
         ("[Writing in Mail]\n\nThe invoice total for this month comes to‸", "the amount we agreed on in the contract."),
-        ("[Writing in Mail]\n\nPlease let me kn‸", "ow if that works for you."),
+        ("[Writing in Mail]\n[Unfinished word \"kn\": know, knew, knowledge]\n\nPlease let me kn‸", "ow if that works for you."),
+        ("[Writing in Safari on reddit.com]\n\nhonestly‸", " the new update made it so much better"),
     ]
 
     static func messages(context: String, text: String) -> [[String: String]] {
@@ -171,6 +173,66 @@ enum ChatCompletion {
         }
         r.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return r
+    }
+
+    /// When the text ends in the middle of a word, a context line with the words it may become, from the dictionary
+    /// in the text's language ("tar" → tarde, tarjeta, tarta…). Small models finish half-words badly on their own
+    /// ("esta tar" → "che", "a contarte"); with the options listed they pick the one that fits.
+    /// Only where the model needs it: short fragments ("reu") and rare words that usually start a longer one ("tar").
+    /// Longer fragments it finishes well by itself, and a list there nudges it off the right form ("forw" + "arding").
+    static func unfinishedWordHint(_ prefix: String) -> String? {
+        guard let tail = fragment(prefix), tail.count <= 3 || Spelling.isWord(tail, in: prefix) else { return nil }
+        var seen = Set<String>(), words: [String] = []
+        for w in Spelling.completions(of: tail, in: prefix)
+        where w.count > tail.count && w.lowercased().hasPrefix(tail.lowercased()) && !w.contains("'") && seen.insert(w.lowercased()).inserted {
+            words.append(tail + w.dropFirst(tail.count))   // as typed: "Universi" → "Universidad"
+            if words.count == 6 { break }
+        }
+        return words.isEmpty ? nil : "[Unfinished word \"\(tail)\": \(words.joined(separator: ", "))]\n"
+    }
+
+    /// The half-typed word the text ends in: letters that aren't a word yet ("docum"), or a rare lowercase word that's
+    /// usually the start of a longer one ("tar" → "tarde"). Common words and names ("con", "Madrid") don't count.
+    static func fragment(_ prefix: String) -> String? {
+        guard let last = prefix.last, last.isLetter else { return nil }
+        let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
+        guard tail.count >= 2 else { return nil }
+        if tail.first?.isUppercase == true { return Spelling.isWord(tail) ? nil : tail }   // a name in any language
+        if !Spelling.isWord(tail, in: prefix) { return tail }
+        return Spelling.isCommonWord(tail, in: prefix) ? nil : tail
+    }
+
+    /// The model finished a half-typed word into something that's neither a usual completion nor a common word
+    /// ("esta tar" + "je para…" → "tarje", a rare verb form): a garbled try at the word the context calls for. Use the
+    /// dictionary's most common completion and keep the rest of the reply ("de para…"). When the reply instead starts
+    /// a new common word ("apprec" + "your help"), completeIgnoredWord keeps it.
+    private static func replaceUnlikelyWord(_ prefix: String, _ reply: String) -> String? {
+        guard let tail = fragment(prefix) else { return nil }
+        let head = String(reply.prefix { $0.isLetter })
+        guard !head.isEmpty, head.first?.isLowercase == true else { return nil }
+        let joined = tail + head
+        let candidates = Spelling.completions(of: tail, in: prefix)
+        if candidates.contains(where: { $0.caseInsensitiveCompare(joined) == .orderedSame }) || Spelling.isCommonWord(joined, in: prefix) {
+            return nil
+        }
+        // The model skipped the half-word and went on with a phrase of its own: completeIgnoredWord keeps that phrase.
+        if !Spelling.isWord(joined, in: prefix), Spelling.isCommonWord(head, in: prefix),
+           reply.dropFirst(head.count).contains(where: \.isLetter) { return nil }
+        guard let top = candidates.first(where: { $0.count > tail.count && $0.lowercased().hasPrefix(tail.lowercased()) && !$0.contains("'") })
+        else { return nil }
+        return String(top.dropFirst(tail.count)) + reply.dropFirst(head.count)
+    }
+
+    /// Replies where the model talks to the person instead of continuing their text ("I'm not sure what you mean
+    /// by 'hole'", "Could you provide more context?"). Short texts invite this; drop them.
+    static func dropAssistantReply(_ suggestion: String, prefix: String) -> String {
+        let meta = #"(?i)(what (you|do you) mean by|could you (please )?(clarify|provide)|provide more (context|details|information)|as an ai\b|language model|i'm not sure what you|qu[eé] quieres decir con|a qu[eé] te refieres|m[aá]s contexto|no estoy segur[oa] de (qu[eé]|lo que)|como (una )?ia\b|modelo de lenguaje)"#
+        guard suggestion.range(of: meta, options: .regularExpression) != nil else { return suggestion }
+        // A longer text that itself is a conversation reply may legitimately say this; a few words never do.
+        let quotesText = prefix.split(whereSeparator: \.isWhitespace).suffix(3).contains { w in
+            w.count >= 3 && suggestion.localizedCaseInsensitiveContains("\"\(w.trimmingCharacters(in: .punctuationCharacters))")
+        }
+        return prefix.split(whereSeparator: \.isWhitespace).count <= 6 || quotesText ? "" : suggestion
     }
 
     /// When neither the text nor its context mentions any figure, a suggested amount, percentage or long number
@@ -249,6 +311,7 @@ enum ChatCompletion {
         if last.isLetter || last.isNumber {
             // Mid-word: the reply finishes the word ("I'll send the docum" + "ents").
             t = repairOverlap(prefix, t)
+            if let fixed = replaceUnlikelyWord(prefix, t) { return fixed }
             if let fixed = completeIgnoredWord(prefix, t) { return fixed }
             if finishesWord(prefix, t) { return t }
             // A new word right after a complete one. A lowercase non-word there is a garbled attempt at finishing
@@ -300,7 +363,7 @@ enum ChatCompletion {
     private static func completeIgnoredWord(_ prefix: String, _ reply: String) -> String? {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
-        guard tail.count >= 2, !head.isEmpty, !Spelling.isCommonWord(tail, in: prefix), !Spelling.isWord(tail + head, in: prefix) else { return nil }
+        guard fragment(prefix) == tail, !head.isEmpty, !Spelling.isWord(tail + head, in: prefix) else { return nil }
         guard Spelling.isWord(head, in: prefix) else { return "" }   // neither finishes the word nor makes sense on its own
         guard let word = Spelling.completion(of: tail, in: prefix) else { return "" }
         return String(word.dropFirst(tail.count)) + " " + reply
@@ -316,7 +379,7 @@ enum ChatCompletion {
         let head = String(reply.prefix { $0.isLetter })
         guard !tail.isEmpty, !head.isEmpty else { return false }
         if head.first?.isUppercase == true, tail.last?.isLowercase == true { return false }   // "update" + "Talk soon"
-        if !Spelling.isCommonWord(tail, in: prefix) { return true }
+        if fragment(prefix) != nil { return true }   // half-typed (names and common words aren't)
         let joined = tail + head
         guard Spelling.isWord(joined, in: prefix) else { return false }
         guard Spelling.shortWords(for: prefix).contains(head.lowercased()) else { return true }
@@ -360,6 +423,9 @@ enum Spelling {
     /// The user's spell-checker language that `text` is clearly written in, if any.
     static func language(of text: String) -> String? {
         let r = NLLanguageRecognizer()
+        // Only the user's own languages: far more confident on short texts ("Nos vemos esta" is 51 % Spanish
+        // unconstrained, 99.9 % among English and Spanish).
+        r.languageConstraints = Array(Set(languages.map { NLLanguage(rawValue: String($0.prefix { $0 != "_" })) }))
         r.processString(String(text.suffix(300)))
         guard let (lang, p) = r.languageHypotheses(withMaximum: 1).first, p > 0.6 else { return nil }
         return languages.first { $0 == lang.rawValue || $0.hasPrefix(lang.rawValue + "_") }

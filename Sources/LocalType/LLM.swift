@@ -102,15 +102,17 @@ final class LLM {
             let ex = History.shared.relevant(to: prefix, limit: n)
             if !ex.isEmpty { header += "[The user's own phrasing: " + ex.map { "\"\($0)\"" }.joined(separator: " ") + "]\n" }
         }
-        if !header.isEmpty { header += "\n" }
-
         if Settings.backend == "embedded" {
+            if !header.isEmpty { header += "\n" }
             let battery = Settings.batteryModelNow.map(GGUFStore.path(for:)).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             guard let path = battery ?? GGUFStore.activePath else { return completion(nil) }
             LlamaEngine.shared.complete(path: path, prompt: header + prefix, maxTokens: Settings.effectiveMaxTokens, completion: completion)
             return
         }
 
+        // Chat models also get the words a half-typed word may become (last: it changes with every keystroke).
+        if let hint = ChatCompletion.unfinishedWordHint(prefix) { header += hint }
+        if !header.isEmpty { header += "\n" }
         chat(context: header, prefix: prefix, completion: completion)
     }
 
@@ -133,7 +135,8 @@ final class LLM {
             }
             let joined = ChatCompletion.join(reply.text, after: prefix, cut: reply.cut)
             let checked = ChatCompletion.dropInventedFigures(joined, context: context + prefix)
-            completion(ChatCompletion.dropLanguageSwitch(checked, prefix: prefix))
+            let sameLanguage = ChatCompletion.dropLanguageSwitch(checked, prefix: prefix)
+            completion(ChatCompletion.dropAssistantReply(sameLanguage, prefix: prefix))
         }
         task?.resume()
     }
