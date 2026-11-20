@@ -24,6 +24,12 @@ final class Controller {
 
     func start() -> Bool {
         guard tap == nil else { return true }
+        // Ask each app that comes to the front for its accessibility tree (needed by Chromium/Electron apps).
+        if let front = NSWorkspace.shared.frontmostApplication { AX.enableAccessibility(for: front) }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                          object: nil, queue: .main) { n in
+            if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication { AX.enableAccessibility(for: app) }
+        }
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)

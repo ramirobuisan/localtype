@@ -48,6 +48,29 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-mlx
     RunLoop.main.run()
 }
 
+// Field check: LocalType --selftest-field <bundle ID> — reads that app's focused field the way a suggestion would
+// (works with the app in the background), then asks the model for a suggestion.
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-field" {
+    _ = NSApplication.shared
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: CommandLine.arguments[2]).first,
+          let el = AX.focusedElement(ofApp: app.processIdentifier) else { print("no focused element"); exit(1) }
+    guard let ctx = AX.readContext(element: el) else {
+        print("readContext: nil — LocalType would not suggest here (see a field probe for which check fails)"); exit(1)
+    }
+    print("prefix: …\(ctx.prefix.suffix(50).debugDescription) (\(ctx.prefix.count) chars)")
+    print("caret: \(ctx.caretRect) line height \(ctx.lineHeight)")
+    print("font: \(ctx.style.map { "\($0.font.fontName) \($0.font.pointSize)" } ?? "unknown (system font fallback)")")
+    print("domain: \(ctx.domain ?? "none")")
+    let t0 = Date()
+    MLXServeStore.shared.prepare { _ in
+        LLM().complete(prefix: ctx.prefix, appName: ctx.appName) { out in
+            print("suggestion [\(Int(Date().timeIntervalSince(t0) * 1000)) ms]: \(out.map { $0.debugDescription } ?? "nil")")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []

@@ -48,8 +48,9 @@ enum AX {
     }
 
     /// Reads the focused text field. Returns nil for secure fields, selections, mid-line carets, etc.
-    static func readContext() -> FieldContext? {
-        guard let el = focusedElement() else { return nil }
+    /// `element` defaults to the system-wide focused element (the self-test passes one app's focused field).
+    static func readContext(element: AXUIElement? = nil) -> FieldContext? {
+        guard let el = element ?? focusedElement() else { return nil }
 
         var pid: pid_t = 0
         AXUIElementGetPid(el, &pid)
@@ -58,6 +59,8 @@ enum AX {
         let role: String? = attr(el, kAXRoleAttribute)
         let subrole: String? = attr(el, kAXSubroleAttribute)
         guard subrole != kAXSecureTextFieldSubrole else { return nil }
+        // Search fields take queries, not prose, and often use Tab to move on.
+        guard subrole != "AXSearchField" else { return nil }
         guard role == kAXTextFieldRole || role == kAXTextAreaRole || role == kAXComboBoxRole || role == "AXWebArea" || role == nil else { return nil }
 
         guard let value: String = attr(el, kAXValueAttribute) else { return nil }
@@ -125,6 +128,15 @@ enum AX {
         guard let r = bounds(el, location, length) else { return nil }
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
         return NSRect(x: r.minX, y: primaryH - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// Chromium and Electron apps (Chrome, Slack, Discord, VS Code, Obsidian…) only build their accessibility tree
+    /// once an assistive tool asks for it. Setting AXManualAccessibility does that; other apps ignore the attribute.
+    private static var accessibilityRequested = Set<pid_t>()
+    static func enableAccessibility(for app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard pid != ProcessInfo.processInfo.processIdentifier, accessibilityRequested.insert(pid).inserted else { return }
+        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
 
     /// The focused element of a given app (works while our own menu is open).
