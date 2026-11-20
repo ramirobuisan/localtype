@@ -8,6 +8,13 @@ struct FieldContext {
     let lineHeight: CGFloat
     let bundleID: String?
     let appName: String?
+    let pid: pid_t
+
+    /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
+    var caretPoint: CGPoint {
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: caretRect.minX, y: primaryH - caretRect.midY)
+    }
 }
 
 enum AX {
@@ -62,26 +69,47 @@ enum AX {
         let prefix = ns.substring(to: caret)
         guard prefix.contains(where: { !$0.isWhitespace }) else { return nil }
 
-        guard let (rect, h) = caretRect(el, caret: caret) else { return nil }
+        guard let (rect, h) = caretRect(el, caret: caret, text: ns) else { return nil }
         let app = NSRunningApplication(processIdentifier: pid)
         return FieldContext(element: el, prefix: String(prefix.suffix(1500)), caretRect: rect, lineHeight: h,
-                            bundleID: app?.bundleIdentifier, appName: app?.localizedName)
+                            bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid)
     }
 
-    /// Bounds of the character before the caret; its right edge is where the caret sits.
-    private static func caretRect(_ el: AXUIElement, caret: Int) -> (NSRect, CGFloat)? {
-        var r = CFRange(location: caret - 1, length: 1)
+    private static func bounds(_ el: AXUIElement, _ location: Int, _ length: Int) -> CGRect? {
+        var r = CFRange(location: location, length: length)
         guard let rv = AXValueCreate(.cfRange, &r) else { return nil }
         var out: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(el, kAXBoundsForRangeParameterizedAttribute as CFString, rv, &out) == .success,
               let out else { return nil }
         var rect = CGRect.zero
         guard AXValueGetValue(out as! AXValue, .cgRect, &rect), rect.height > 0, rect.width >= 0 else { return nil }
-        // Newline char before caret => caret is at start of a new line; not supported cleanly.
-        let x = rect.maxX, yTop = rect.minY
+        return rect
+    }
+
+    /// Where the caret sits, as a zero-width rect in Cocoa coordinates, plus the line height.
+    /// Normally the right edge of the character before the caret; right after a line break that character
+    /// is on the previous line, so use the insertion point itself or the start of the next character.
+    private static func caretRect(_ el: AXUIElement, caret: Int, text: NSString) -> (NSRect, CGFloat)? {
+        let prev = text.character(at: caret - 1)
+        let atLineStart = prev == 10 || prev == 13 || prev == 0x2028 || prev == 0x2029
+        var x: CGFloat, top: CGFloat, height: CGFloat
+        if !atLineStart {
+            guard let r = bounds(el, caret - 1, 1) else { return nil }
+            x = r.maxX; top = r.minY; height = r.height
+        } else {
+            let prevLine = bounds(el, caret - 1, 1)
+            let isBelow = { (r: CGRect) in prevLine == nil || r.minY >= prevLine!.maxY - 1 }
+            if let r = bounds(el, caret, 0), r.height > 0, isBelow(r) {
+                x = r.minX; top = r.minY; height = r.height
+            } else if caret < text.length, text.character(at: caret) != 10, let r = bounds(el, caret, 1), isBelow(r) {
+                x = r.minX; top = r.minY; height = r.height
+            } else {
+                return nil   // empty last line and the app reports no insertion-point bounds
+            }
+        }
         // AX coords: origin top-left of primary screen. Convert to Cocoa.
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
-        let cocoa = NSRect(x: x, y: primaryH - yTop - rect.height, width: 0, height: rect.height)
-        return (cocoa, rect.height)
+        let cocoa = NSRect(x: x, y: primaryH - top - height, width: 0, height: height)
+        return (cocoa, height)
     }
 }

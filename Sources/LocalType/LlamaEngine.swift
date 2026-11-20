@@ -6,7 +6,7 @@ import llama
 final class LlamaEngine {
     static let shared = LlamaEngine()
 
-    private let queue = DispatchQueue(label: "cotypist.llama", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "localtype.llama", qos: .userInitiated)
     private let lock = NSLock()
     private var latest = 0
 

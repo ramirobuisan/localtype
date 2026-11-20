@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import IOKit.ps
 
-private let syntheticMarker: Int64 = 0x436F7479 // "Coty": tags events we post ourselves
+private let syntheticMarker: Int64 = 0x4C635470 // "LcTp": tags events we post ourselves
 
 final class Controller {
     static let shared = Controller()
@@ -15,6 +15,8 @@ final class Controller {
     private(set) var suggestion: String?
     /// Set when the suggestion is a typo fix: delete `typo` characters, then type `suggestion`.
     private var fixDelete: Int?
+    /// Set while an emoji suggestion is showing: matches, the selected one, and how many characters ":query" spans.
+    private var emoji: (items: [Emoji.Item], index: Int, delete: Int, caret: NSRect)?
     private var lastError: Bool = false
     var onStatus: ((String) -> Void)?
 
@@ -66,12 +68,25 @@ final class Controller {
             DispatchQueue.main.async { self.dismiss(); self.trigger(force: true) }
             return nil
         }
+        if let e = emoji {
+            if let k = Settings.keyAcceptAll, k.matches(code: code, cgFlags: cg) {
+                acceptEmoji(e.items[e.index], delete: e.delete)
+                return nil
+            }
+            if e.items.count > 1, let k = Settings.keyAcceptWord, k.matches(code: code, cgFlags: cg) {
+                let next = (e.index + 1) % e.items.count
+                emoji?.index = next
+                suggestion = e.items[next].char
+                overlay.showEmoji(e.items, selected: next, at: e.caret)
+                return nil
+            }
+        }
         if let s = suggestion {
             if let k = Settings.keyAcceptAll, k.matches(code: code, cgFlags: cg) {
                 if let n = fixDelete { applyFix(delete: n, with: s) } else { accept(s) }
                 return nil
             }
-            if fixDelete == nil, let k = Settings.keyAcceptWord, k.matches(code: code, cgFlags: cg) {
+            if fixDelete == nil, emoji == nil, let k = Settings.keyAcceptWord, k.matches(code: code, cgFlags: cg) {
                 acceptWord(s)
                 return nil
             }
@@ -129,6 +144,16 @@ final class Controller {
         lastPrefix = ctx.prefix
         if Settings.recordWriting, Settings.recordWithoutAccept,
            let sentence = History.lastSentence(ctx.prefix, completed: true) { History.shared.add(sentence) }
+
+        if Settings.emojiCompletion, let q = Emoji.query(in: ctx.prefix) {
+            let items = Emoji.search(q)
+            if !items.isEmpty {
+                emoji = (items, 0, q.count + 1, ctx.caretRect)
+                suggestion = items[0].char
+                overlay.showEmoji(items, selected: 0, at: ctx.caretRect)
+            }
+            return   // never run the model on a half-typed ":shortcode"
+        }
         if Settings.pauseLowPower, ProcessInfo.processInfo.isLowPowerModeEnabled { return }
         if Settings.pauseOnBattery, Controller.onBattery { return }
 
@@ -139,9 +164,14 @@ final class Controller {
             }
             return
         }
+        var screen: String?
+        if Settings.useScreen {
+            ScreenContext.shared.refreshIfStale(pid: ctx.pid, caret: ctx.caretPoint)
+            screen = ScreenContext.shared.text(pid: ctx.pid, caret: ctx.caretPoint, excluding: ctx.prefix)
+        }
         generation += 1
         let gen = generation
-        llm.complete(prefix: ctx.prefix, appName: ctx.appName) { [weak self] raw in
+        llm.complete(prefix: ctx.prefix, appName: ctx.appName, screen: screen) { [weak self] raw in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
                 guard let raw else {
@@ -175,6 +205,7 @@ final class Controller {
         llm.cancel()
         suggestion = nil
         fixDelete = nil
+        emoji = nil
         overlay.hide()
     }
 
@@ -211,15 +242,28 @@ final class Controller {
     private func applyFix(delete n: Int, with text: String) {
         dismiss()
         Settings.fixesApplied += 1
+        deleteBackward(n)
+        type(text)
+    }
+
+    private func acceptEmoji(_ item: Emoji.Item, delete n: Int) {
+        dismiss()
+        Settings.emojiInserted += 1
+        Emoji.recordUse(item.char)
+        deleteBackward(n)
+        type(item.char)
+    }
+
+    private func deleteBackward(_ n: Int) {
         let src = CGEventSource(stateID: .privateState)
         for _ in 0..<n {
             for down in [true, false] {
                 guard let e = CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: down) else { continue }
                 e.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+                e.flags = []
                 e.post(tap: .cgSessionEventTap)
             }
         }
-        type(text)
     }
 
     // MARK: Accept

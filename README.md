@@ -11,17 +11,17 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
 
 ## Build
 
-Requires macOS 13+, Apple Silicon, Swift 5.9+ (Command Line Tools are enough).
+Requires macOS 14+, Apple Silicon, Swift 5.9+ (Command Line Tools are enough).
 
 ```bash
 ./scripts/fetch-llama.sh   # downloads the prebuilt llama.cpp framework into Vendor/
-./build.sh                 # builds and signs Cotypist.app (ad-hoc; use SIGN_ID="My Cert" ./build.sh to sign with your own certificate)
-open Cotypist.app
+./build.sh                 # builds and signs LocalType.app (ad-hoc; use SIGN_ID="My Cert" ./build.sh to sign with your own certificate)
+open LocalType.app
 ```
 
 Grant **Accessibility** permission when asked (System Settings → Privacy & Security). Then open *Models…* from the menu-bar icon and download a model (e.g. Qwen2.5 3B).
 
-Headless engine check: `Cotypist.app/Contents/MacOS/Cotypist --selftest model.gguf "Some text to continue"`
+Headless engine check: `LocalType.app/Contents/MacOS/LocalType --selftest model.gguf "Some text to continue"`
 
 ## How it works
 

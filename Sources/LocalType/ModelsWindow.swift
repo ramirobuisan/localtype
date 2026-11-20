@@ -31,7 +31,7 @@ final class ModelsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NST
     private func build() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 460),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "Cotypist Models"
+        w.title = "LocalType Models"
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.center()

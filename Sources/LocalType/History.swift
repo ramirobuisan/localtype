@@ -7,12 +7,7 @@ final class History {
 
     private struct Entry: Codable { let text: String; let date: Date }
     private var entries: [Entry] = []
-    private let url: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("Cotypist", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("history.json")
-    }()
+    private let url = AppPaths.support.appendingPathComponent("history.json")
     private static let cap = 2000
 
     private init() {

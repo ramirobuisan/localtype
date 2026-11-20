@@ -14,13 +14,15 @@ final class LLM {
         LlamaEngine.shared.cancel()
     }
 
-    func complete(prefix: String, appName: String?, completion: @escaping (String?) -> Void) {
+    func complete(prefix: String, appName: String?, screen: String? = nil, completion: @escaping (String?) -> Void) {
         cancel()
         // Raw mode has no system prompt, so style/context goes in as a short bracketed header.
+        // Ordered from most to least stable so the engine can reuse its KV cache across keystrokes.
         var header = ""
-        if let appName { header += "[Writing in \(appName)]\n" }
         let style = Settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if !style.isEmpty { header += "[Style: \(style.replacingOccurrences(of: "\n", with: " "))]\n" }
+        if let appName { header += "[Writing in \(appName)]\n" }
+        if let screen, !screen.isEmpty { header += "[On screen: \(screen)]\n" }
         if Settings.useClipboard, let clip = NSPasteboard.general.string(forType: .string) {
             let c = clip.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
             if !c.isEmpty { header += "[Clipboard: \(c.prefix(400))]\n" }

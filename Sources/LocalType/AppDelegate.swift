@@ -7,18 +7,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let perApp = NSMenuItem(title: "", action: #selector(toggleFrontmostApp), keyEquivalent: "")
     private let models = NSMenuItem(title: "Models…", action: #selector(openModels), keyEquivalent: "m")
     private let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+    private let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: "")
     private var permissionTimer: Timer?
     private var frontmostID: String?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: "Cotypist")
+        item.button?.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: "LocalType")
 
         let m = NSMenu()
         m.delegate = self
         m.addItem(statusLine)
         m.addItem(.separator())
-        for i in [toggle, perApp, models, settings] { i.target = self; m.addItem(i) }
+        for i in [toggle, perApp, models, settings, setup] { i.target = self; m.addItem(i) }
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = m
@@ -30,14 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         ModelsWindow.shared.onChange = { [weak self] in self?.checkModelStatusOnly() }
         Controller.shared.onStatus = { [weak self] s in self?.statusLine.title = s }
-        startWhenTrusted()
+        let firstRun = !Settings.onboardingDone || CommandLine.arguments.contains("--setup")
+        startWhenTrusted(prompt: !firstRun)
+        ScreenContext.shared.prewarm()   // the setup window has its own "Grant Access" step
+        if firstRun { OnboardingWindow.shared.show() }
         if CommandLine.arguments.contains("--settings") { SettingsWindow.shared.show() }
     }
 
     func applicationWillTerminate(_ n: Notification) { LlamaEngine.shared.shutdown() }
 
-    private func startWhenTrusted() {
-        if AX.trusted(prompt: true), Controller.shared.start() {
+    private func startWhenTrusted(prompt: Bool) {
+        if AX.trusted(prompt: prompt), Controller.shared.start() {
             checkModel()
             return
         }
@@ -102,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if let p = GGUFStore.activePath {
                 LlamaEngine.shared.preload(path: p)
-            } else if GGUFStore.shared.list().isEmpty {
+            } else if GGUFStore.shared.list().isEmpty, Settings.onboardingDone {
                 ModelsWindow.shared.show()
             }
             checkModelStatusOnly()
@@ -115,11 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             ModelManager.shared.list { list in
-                if list?.isEmpty == true { ModelsWindow.shared.show() }
+                if list?.isEmpty == true, Settings.onboardingDone { ModelsWindow.shared.show() }
                 self.checkModelStatusOnly()
             }
         }
     }
 
     @objc private func openSettings() { SettingsWindow.shared.show() }
+    @objc private func openSetup() { OnboardingWindow.shared.show() }
 }

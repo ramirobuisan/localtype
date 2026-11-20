@@ -2,7 +2,7 @@ import Foundation
 import ServiceManagement
 
 extension Notification.Name {
-    static let settingsChanged = Notification.Name("CotypistSettingsChanged")
+    static let settingsChanged = Notification.Name("LocalTypeSettingsChanged")
 }
 
 enum Settings {
@@ -21,7 +21,7 @@ enum Settings {
         get { d.string(forKey: "backend") ?? "embedded" }
         set { d.set(newValue, forKey: "backend"); notify() }
     }
-    /// GGUF file name (inside ~/Library/Application Support/Cotypist/Models) for the embedded engine.
+    /// GGUF file name (inside ~/Library/Application Support/LocalType/Models) for the embedded engine.
     static var embeddedModel: String {
         get { d.string(forKey: "embeddedModel") ?? "" }
         set { d.set(newValue, forKey: "embeddedModel"); notify() }
@@ -91,9 +91,29 @@ enum Settings {
     static var accepted: Int { get { d.integer(forKey: "statAccepted") } set { d.set(newValue, forKey: "statAccepted") } }
     static var wordsAccepted: Int { get { d.integer(forKey: "statWords") } set { d.set(newValue, forKey: "statWords") } }
     static var fixesApplied: Int { get { d.integer(forKey: "statFixes") } set { d.set(newValue, forKey: "statFixes") } }
-    static func resetStats() { shown = 0; accepted = 0; wordsAccepted = 0; fixesApplied = 0 }
+    static var emojiInserted: Int { get { d.integer(forKey: "statEmoji") } set { d.set(newValue, forKey: "statEmoji") } }
+    static func resetStats() { shown = 0; accepted = 0; wordsAccepted = 0; fixesApplied = 0; emojiInserted = 0 }
 
     // Context / personalization
+    /// Read the window you're typing in (screen capture + on-device text recognition) for context.
+    static var useScreen: Bool {
+        get { d.bool(forKey: "useScreen") }
+        set { d.set(newValue, forKey: "useScreen") }
+    }
+    /// ":name" suggests an emoji.
+    static var emojiCompletion: Bool {
+        get { d.object(forKey: "emojiCompletion") as? Bool ?? true }
+        set { d.set(newValue, forKey: "emojiCompletion") }
+    }
+    /// How often each emoji was inserted; ranks frequent ones first.
+    static var emojiUsage: [String: Int] {
+        get { d.dictionary(forKey: "emojiUsage") as? [String: Int] ?? [:] }
+        set { d.set(newValue, forKey: "emojiUsage") }
+    }
+    static var onboardingDone: Bool {
+        get { d.bool(forKey: "onboardingDone") }
+        set { d.set(newValue, forKey: "onboardingDone") }
+    }
     static var useClipboard: Bool {
         get { d.bool(forKey: "useClipboard") }
         set { d.set(newValue, forKey: "useClipboard") }

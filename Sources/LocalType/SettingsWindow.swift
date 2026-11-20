@@ -48,7 +48,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     private func build() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        w.title = "Cotypist Settings"
+        w.title = "LocalType Settings"
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 700, height: 420)
         w.delegate = self
@@ -277,7 +277,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return [
             section(nil, [
                 toggle("Launch automatically at login", nil, get: { Settings.launchAtLogin }, set: { Settings.launchAtLogin = $0 }),
-                toggle("Show menu bar icon", "Display the Cotypist icon in the menu bar. If hidden, reopen the app to get back here.",
+                toggle("Show menu bar icon", "Display the LocalType icon in the menu bar. If hidden, reopen the app to get back here.",
                        get: { Settings.showMenuBarIcon }, set: { Settings.showMenuBarIcon = $0 }),
             ]),
             section("AI Settings", [
@@ -295,7 +295,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                        "When disabled, completions are turned off for all apps unless individually enabled per app in the App Settings pane.",
                        get: { Settings.enabledByDefault }, set: { Settings.enabledByDefault = $0 }),
                 toggle("Complete inside existing text",
-                       "Normally Cotypist suggests only at the end of a line. Turn this on to also get suggestions when there is still text after the cursor on the same line.",
+                       "Normally LocalType suggests only at the end of a line. Turn this on to also get suggestions when there is still text after the cursor on the same line.",
                        get: { Settings.completeInside }, set: { Settings.completeInside = $0 }),
                 popup("Maximum completion length",
                       "Controls how long generated completions can be. Medium is recommended: longer completions are slower and more likely to drift from your intent — the next-word shortcut lets you take just part of them.",
@@ -306,9 +306,14 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             section("Privacy", [
                 row("Nothing leaves your Mac", "Completions run on the built-in engine. There are no analytics, crash reports or accounts. Only a model download or an Ollama server you configure uses the network.", nil),
             ]),
+            section("Emoji", [
+                toggle("Emoji completion",
+                       "Type a colon and part of a name, like :fire or :thumbs_up, to get an emoji. The accept key inserts it; the next-word key shows the next match. Emoji you use often come first.",
+                       get: { Settings.emojiCompletion }, set: { Settings.emojiCompletion = $0 }),
+            ]),
             section("Autocorrect", [
                 toggle("Don't show completions when typo suspected",
-                       "Hides the completion when the word you're typing looks misspelled, so Cotypist doesn't extend a typo. It uses the macOS spell checker and isn't a full spell-check.",
+                       "Hides the completion when the word you're typing looks misspelled, so LocalType doesn't extend a typo. It uses the macOS spell checker and isn't a full spell-check.",
                        get: { Settings.typoGuard }, set: { Settings.typoGuard = $0 }),
                 toggle("Show suggested fixes", "When a likely correction is available, offer it (orange ✎) and let the accept key replace the typo.",
                        indent: true, get: { Settings.suggestFixes }, set: { Settings.suggestFixes = $0 }),
@@ -318,8 +323,24 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     private func context() -> [NSView] {
         [
-            section("Screenshot Settings", [
-                row("Screenshots for context", "Not available in this build. It would need Screen Recording permission and on-device text recognition.", nil),
+            section("Screen Settings", [
+                toggle("Use screen content for context",
+                       "Reads the text in the window you're typing in (an email you're replying to, a chat, a document) so completions fit the conversation. The window is captured and read with on-device text recognition; nothing is saved or sent anywhere. Needs Screen Recording permission.",
+                       get: { Settings.useScreen }, set: { on in
+                           Settings.useScreen = on
+                           ScreenContext.shared.clear()
+                           ScreenContext.shared.prewarm()
+                           if on, !ScreenContext.permitted { ScreenContext.requestPermission() }
+                           self.select(1)
+                       }),
+                Settings.useScreen
+                    ? (ScreenContext.permitted
+                        ? row("Screen Recording", "Granted.", nil, indent: true)
+                        : button("Screen Recording", "Not granted yet. Allow LocalType in System Settings → Privacy & Security → Screen & System Audio Recording, then quit and reopen LocalType.",
+                                 "Open Settings…") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                        })
+                    : row("Tip", "Turn it off in apps with sensitive content from App Settings, or with the per-app shortcut.", nil, indent: true),
             ]),
             section("Clipboard Settings", [
                 toggle("Use clipboard for context",
@@ -362,10 +383,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return [
             section("Typing History", [
                 toggle("Record your writing for personalization",
-                       "Cotypist can record sentences you write in fields where it suggests text, so completions can echo your own words and phrases. Recorded text is stored only on this Mac (~/Library/Application Support/Cotypist/history.json, readable only by you, not encrypted) and is never sent anywhere. Don't enable this if you work with sensitive information.",
+                       "LocalType can record sentences you write in fields where it suggests text, so completions can echo your own words and phrases. Recorded text is stored only on this Mac (~/Library/Application Support/LocalType/history.json, readable only by you, not encrypted) and is never sent anywhere. Don't enable this if you work with sensitive information.",
                        get: { Settings.recordWriting }, set: { Settings.recordWriting = $0 }),
                 toggle("Record text even when you accept no suggestion",
-                       "When disabled, Cotypist records only text where you accepted at least one completion.",
+                       "When disabled, LocalType records only text where you accepted at least one completion.",
                        indent: true, get: { Settings.recordWithoutAccept }, set: { Settings.recordWithoutAccept = $0 }),
                 row("Personalize word choice",
                     "Shows the model a few of your past sentences that resemble what you're typing. Higher values show more; too many may occasionally bias toward a less fitting word. Slightly slower, since the prompt changes each time.",
@@ -449,8 +470,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return [
             section(listKey, [
                 row(listKey, Settings.enabledByDefault
-                    ? "Cotypist is on everywhere except these apps. One bundle ID per line."
-                    : "Cotypist is off everywhere except these apps (see “Enable completions by default”). One bundle ID per line.", pop),
+                    ? "LocalType is on everywhere except these apps. One bundle ID per line."
+                    : "LocalType is off everywhere except these apps (see “Enable completions by default”). One bundle ID per line.", pop),
                 area,
             ]),
         ]
@@ -465,6 +486,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 row("Acceptance rate", nil, NSTextField(labelWithString: rate)),
                 row("Words inserted", nil, NSTextField(labelWithString: "\(Settings.wordsAccepted)")),
                 row("Typo fixes applied", nil, NSTextField(labelWithString: "\(Settings.fixesApplied)")),
+                row("Emoji inserted", nil, NSTextField(labelWithString: "\(Settings.emojiInserted)")),
                 button("Reset statistics", nil, "Reset…") { Settings.resetStats(); self.select(6) },
             ]),
         ]

@@ -31,11 +31,35 @@ final class Overlay {
         bg.addSubview(hint)
     }
 
+    private static func fontSize(_ caret: NSRect) -> CGFloat { max(11, min(caret.height * 0.8, 20)) }
+
     func show(_ text: String, at caret: NSRect, isFix: Bool = false) {
-        let size = max(11, min(caret.height * 0.8, 20))
-        label.font = .systemFont(ofSize: size)
-        label.stringValue = isFix ? "✎ " + text : text
-        label.textColor = isFix ? .systemOrange : .secondaryLabelColor
+        let font = NSFont.systemFont(ofSize: Overlay.fontSize(caret))
+        let color: NSColor = isFix ? .systemOrange : .secondaryLabelColor
+        present(NSAttributedString(string: isFix ? "✎ " + text : text, attributes: [.font: font, .foregroundColor: color]),
+                hint: Settings.keyAcceptAll?.display ?? "⇥", at: caret)
+    }
+
+    /// The selected emoji and its name, followed by the other matches; the next-word key cycles through them.
+    func showEmoji(_ items: [Emoji.Item], selected: Int, at caret: NSRect) {
+        let size = Overlay.fontSize(caret)
+        let s = NSMutableAttributedString()
+        s.append(NSAttributedString(string: items[selected].char + " ", attributes: [.font: NSFont.systemFont(ofSize: size)]))
+        s.append(NSAttributedString(string: items[selected].name, attributes: [
+            .font: NSFont.systemFont(ofSize: size * 0.8), .foregroundColor: NSColor.secondaryLabelColor]))
+        let others = items.indices.filter { $0 != selected }.map { items[$0].char }
+        if !others.isEmpty {
+            s.append(NSAttributedString(string: "   " + others.joined(separator: " "), attributes: [
+                .font: NSFont.systemFont(ofSize: size * 0.8), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        let accept = Settings.keyAcceptAll?.display ?? "⇥"
+        let next = Settings.keyAcceptWord.map { " · \($0.display) next" } ?? ""
+        present(s, hint: others.isEmpty ? accept : accept + next, at: caret)
+    }
+
+    private func present(_ text: NSAttributedString, hint hintText: String, at caret: NSRect) {
+        label.attributedStringValue = text
+        hint.stringValue = hintText
         label.sizeToFit()
         hint.sizeToFit()
 
