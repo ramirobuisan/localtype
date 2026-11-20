@@ -25,7 +25,9 @@ fi
 
 # Ad hoc signature: a personal certificate's name (often an email address) would ship inside a public download.
 SIGN_ID=- ./build.sh
-codesign -dv LocalType.app 2>&1 | grep -q "Signature=adhoc" || fail "the build isn't ad hoc signed"
+# (read the output first: with pipefail, `grep -q` closing the pipe early would count as a failure)
+SIG=$(codesign -dv LocalType.app 2>&1)
+[[ "$SIG" == *"Signature=adhoc"* ]] || fail "the build isn't ad hoc signed"
 codesign --verify --deep --strict LocalType.app || fail "the signature doesn't verify"
 [ "$(defaults read "$PWD/LocalType.app/Contents/Info" CFBundleShortVersionString)" = "$VERSION" ] || fail "built version mismatch"
 for s in "$HOME/" "$(git config user.email || true)"; do
