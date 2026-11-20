@@ -417,11 +417,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 case .failed(let why): status.stringValue = "Couldn't check: \(why)"
                 case .available(let r):
                     status.stringValue = "LocalType \(r.version) is available."
-                    let a = NSAlert()
-                    a.messageText = "LocalType \(r.version) is available"
-                    a.informativeText = "You have \(Updates.current). Open the release page to download it?"
-                    a.addButton(withTitle: "Open Release Page"); a.addButton(withTitle: "Later")
-                    if a.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(r.url) }
+                    UpdateWindow.shared.show(r)
                 }
             }
         }
@@ -436,7 +432,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             section(nil, [header]),
             section("Updates", [
                 checkRow,
-                toggle("Check for updates automatically", "Looks for a new release on GitHub once a day. LocalType only tells you; it never installs anything by itself.",
+                toggle("Check for updates automatically", "Looks for a new release on GitHub once a day and lets you know; nothing is installed until you choose Install and Relaunch.",
                        get: { Settings.autoCheckUpdates }, set: { Settings.autoCheckUpdates = $0 }),
                 button("Source code", "The project, its issues and its releases.", "Open GitHub") { NSWorkspace.shared.open(Updates.repoURL) },
             ]),

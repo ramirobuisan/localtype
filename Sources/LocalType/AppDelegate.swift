@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Sync.update()
         startWhenTrusted(prompt: !firstRun)
         ScreenContext.shared.prewarm()
-        Updates.checkInBackgroundIfDue { [weak self] in self?.refreshUpdateItem() }   // the setup window has its own "Grant Access" step
+        Updates.checkInBackgroundIfDue { [weak self] in self?.refreshUpdateItem() }
         if firstRun { OnboardingWindow.shared.show() }
         if let i = CommandLine.arguments.firstIndex(of: "--settings") {
             let args = CommandLine.arguments
@@ -202,5 +202,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let r = Updates.available { update.title = "LocalType \(r.version) Available…" }
     }
 
-    @objc private func openUpdate() { if let r = Updates.available { NSWorkspace.shared.open(r.url) } }
+    @objc private func openUpdate() { if let r = Updates.available { UpdateWindow.shared.show(r) } }
 }
