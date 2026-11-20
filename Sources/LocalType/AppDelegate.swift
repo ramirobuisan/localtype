@@ -5,6 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusLine = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
     private let toggle = NSMenuItem(title: "Enabled", action: #selector(toggleEnabled), keyEquivalent: "")
     private let perApp = NSMenuItem(title: "", action: #selector(toggleFrontmostApp), keyEquivalent: "")
+    private let perSite = NSMenuItem(title: "", action: #selector(toggleFrontmostSite), keyEquivalent: "")
+    private var frontmostDomain: String?
     private let models = NSMenuItem(title: "Models…", action: #selector(openModels), keyEquivalent: "m")
     private let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: "")
@@ -19,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.delegate = self
         m.addItem(statusLine)
         m.addItem(.separator())
-        for i in [toggle, perApp, models, settings, setup] { i.target = self; m.addItem(i) }
+        for i in [toggle, perApp, perSite, models, settings, setup] { i.target = self; m.addItem(i) }
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = m
@@ -35,7 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startWhenTrusted(prompt: !firstRun)
         ScreenContext.shared.prewarm()   // the setup window has its own "Grant Access" step
         if firstRun { OnboardingWindow.shared.show() }
-        if CommandLine.arguments.contains("--settings") { SettingsWindow.shared.show() }
+        if let i = CommandLine.arguments.firstIndex(of: "--settings") {
+            let args = CommandLine.arguments
+            SettingsWindow.shared.show(page: i + 1 < args.count ? args[i + 1] : "General")
+        }
     }
 
     func applicationWillTerminate(_ n: Notification) { LlamaEngine.shared.shutdown() }
@@ -70,20 +75,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             perApp.isHidden = true
         }
+        // Website of the page being typed in, if the frontmost app shows one.
+        frontmostDomain = app.flatMap { AX.focusedElement(ofApp: $0.processIdentifier) }.flatMap(AX.webDomain(of:))
+        if let domain = frontmostDomain {
+            let site = Settings.domainRule(for: domain)?.domain ?? domain
+            perSite.isHidden = false
+            perSite.title = Settings.allowed(bundleID: frontmostID, domain: domain) ? "Disable on \(site)" : "Enable on \(site)"
+        } else {
+            perSite.isHidden = true
+        }
+    }
+
+    @objc private func toggleFrontmostSite() {
+        guard let domain = frontmostDomain else { return }
+        let site = Settings.domainRule(for: domain)?.domain ?? domain
+        var rules = Settings.domainRules
+        rules[site] = !Settings.allowed(bundleID: frontmostID, domain: domain)
+        Settings.domainRules = rules
+        Controller.shared.dismiss()
     }
 
     @objc private func toggleEnabled() { Settings.enabled.toggle() }
 
     @objc private func toggleFrontmostApp() {
         guard let id = frontmostID else { return }
-        var list = Settings.enabledByDefault ? Settings.disabledApps : Settings.enabledApps
-        if let i = list.firstIndex(of: id) { list.remove(at: i) } else { list.append(id) }
-        if Settings.enabledByDefault { Settings.disabledApps = list } else { Settings.enabledApps = list }
+        var rules = Settings.appRules
+        rules[id] = !Settings.allowed(bundleID: id)
+        Settings.appRules = rules
         Controller.shared.dismiss()
     }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        SettingsWindow.shared.show()
+        SettingsWindow.shared.show(page: "General")
         return true
     }
 
@@ -133,6 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openSettings() { SettingsWindow.shared.show() }
+    @objc private func openSettings() { SettingsWindow.shared.show(page: "General") }
     @objc private func openSetup() { OnboardingWindow.shared.show() }
 }

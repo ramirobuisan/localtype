@@ -120,12 +120,12 @@ final class Controller {
     private var pausedUntil = Date.distantPast
     private var overrides: [String: (enabled: Bool, until: Date)] = [:]
 
-    func isAllowed(_ bundleID: String?) -> Bool {
+    func isAllowed(_ bundleID: String?, domain: String? = nil) -> Bool {
         if let id = bundleID, let o = overrides[id] {
             if o.until > Date() { return o.enabled }
             overrides[id] = nil
         }
-        return Settings.allowed(bundleID: bundleID)
+        return Settings.allowed(bundleID: bundleID, domain: domain)
     }
 
     private func toggleCurrentAppTemporarily() {
@@ -144,31 +144,44 @@ final class Controller {
     }
 
     private var lastPrefix = ""
+    private var lastApp: String?
 
     private func trigger(force: Bool = false) {
         guard Date() >= pausedUntil || force else { return }
         guard let ctx = AX.readContext() else { return }
-        guard isAllowed(ctx.bundleID) else { return }
+        overlay.fieldStyle = ctx.style
+        guard isAllowed(ctx.bundleID, domain: ctx.domain) else { return }
         lastPrefix = ctx.prefix
+        lastApp = ctx.bundleID
         if Settings.recordWriting, Settings.recordWithoutAccept,
-           let sentence = History.lastSentence(ctx.prefix, completed: true) { History.shared.add(sentence) }
+           let sentence = History.lastSentence(ctx.prefix, completed: true) { History.shared.add(sentence, app: ctx.bundleID) }
 
-        if Settings.emojiCompletion, let q = Emoji.query(in: ctx.prefix) {
-            let items = Emoji.search(q)
-            if !items.isEmpty {
-                emoji = (items, 0, q.count + 1, ctx.caretRect)
-                suggestion = items[0].char
-                overlay.showEmoji(items, selected: 0, at: ctx.caretRect)
+        if Settings.emojiCompletion {
+            if Settings.emojiEmoticons, let (item, length) = Emoji.emoticon(in: ctx.prefix) {
+                emoji = ([item], 0, length, ctx.caretRect)
+                suggestion = item.char
+                overlay.showEmoji([item], selected: 0, at: ctx.caretRect)
+                return
             }
-            return   // never run the model on a half-typed ":shortcode"
+            if let (q, length) = Emoji.query(in: ctx.prefix) {
+                let items = Emoji.search(q)
+                if !items.isEmpty {
+                    emoji = (items, 0, length, ctx.caretRect)
+                    suggestion = items[0].char
+                    overlay.showEmoji(items, selected: 0, at: ctx.caretRect)
+                }
+                return   // never run the model on a half-typed ":shortcode"
+            }
         }
         if Settings.pauseLowPower, ProcessInfo.processInfo.isLowPowerModeEnabled { return }
         if Settings.pauseOnBattery, Controller.onBattery { return }
+        if Settings.batteryOnDemand, !force, Controller.onBattery { return }
 
         if Settings.typoGuard, let word = Controller.currentWord(ctx.prefix), let typo = Controller.checkTypo(word) {
             if Settings.suggestFixes, let fix = typo {
                 suggestion = fix; fixDelete = word.count
-                overlay.show(fix, at: ctx.caretRect, isFix: true)
+                let typoRect = AX.screenRect(ctx.element, location: ctx.caretIndex - word.count, length: word.count)
+                overlay.show(fix, at: ctx.caretRect, isFix: true, typo: typoRect)
             }
             return
         }
@@ -190,12 +203,14 @@ final class Controller {
                     return
                 }
                 if self.lastError { self.lastError = false; self.onStatus?("Ready") }
-                let text = Controller.clean(raw, prefix: ctx.prefix)
+                var text = Controller.clean(raw, prefix: ctx.prefix)
+                if Settings.currentWordOnly { text = Controller.restOfWord(text, after: ctx.prefix) }
                 guard !text.isEmpty else { return }
                 // Caret may have moved while we waited.
                 guard let now = AX.readContext(), now.prefix == ctx.prefix else { return }
                 self.suggestion = text
                 Settings.shown += 1
+                self.overlay.fieldStyle = now.style
                 self.overlay.show(text, at: now.caretRect)
             }
         }
@@ -208,6 +223,12 @@ final class Controller {
         if prefix.last == " ", t.first == " " { t.removeFirst() }
         if t.trimmingCharacters(in: .whitespaces).isEmpty { return "" }
         return t
+    }
+
+    /// "Current word only": the letters that finish the word being typed, or nothing if the caret isn't mid-word.
+    static func restOfWord(_ text: String, after prefix: String) -> String {
+        guard let last = prefix.last, last.isLetter, let first = text.first, first.isLetter else { return "" }
+        return String(text.prefix { $0.isLetter || $0 == "'" || $0 == "’" })
     }
 
     func dismiss() {
@@ -247,7 +268,7 @@ final class Controller {
 
     private func recordAccepted(_ text: String) {
         guard Settings.recordWriting, let sentence = History.lastSentence(lastPrefix + text, completed: false) else { return }
-        History.shared.add(sentence)
+        History.shared.add(sentence, app: lastApp)
     }
 
     private func applyFix(delete n: Int, with text: String) {
@@ -263,6 +284,7 @@ final class Controller {
         Emoji.recordUse(item.char)
         deleteBackward(n)
         type(item.char)
+        Stats.shared.record(item.char, app: lastApp)
     }
 
     private func deleteBackward(_ n: Int) {
@@ -289,7 +311,7 @@ final class Controller {
         } else {
             while idx < text.endIndex, !text[idx].isWhitespace { idx = text.index(after: idx) }
         }
-        if Settings.includeTrailingPunct {
+        if Settings.punctuationMode == 2 {
             while idx < text.endIndex, !text[idx].isWhitespace, !isWordChar(text[idx]) { idx = text.index(after: idx) }
         }
         if Settings.includeTrailingSpace, idx < text.endIndex, text[idx] == " " { idx = text.index(after: idx) }
@@ -299,21 +321,37 @@ final class Controller {
         Settings.accepted += 1; Settings.wordsAccepted += 1
         recordAccepted(word)
         type(word)
+        Stats.shared.record(word, app: lastApp)
         guard !rest.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         // Let the target app apply the insert, then re-anchor the remainder at the new caret.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
             guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
             self.suggestion = rest
+            self.overlay.fieldStyle = ctx.style
             self.overlay.show(rest, at: ctx.caretRect)
         }
     }
 
     private func accept(_ text: String) {
+        // "Never" include trailing punctuation: keep it in the suggestion for another press.
+        var take = text, rest = ""
+        if Settings.punctuationMode == 0 {
+            let punct = text.reversed().prefix { $0.isPunctuation && $0 != "'" && $0 != "’" }
+            if punct.count < text.count { take = String(text.dropLast(punct.count)); rest = String(punct.reversed()) }
+        }
         dismiss()
-        recordAccepted(text)
+        recordAccepted(take)
         Settings.accepted += 1
-        Settings.wordsAccepted += text.split(whereSeparator: { $0.isWhitespace }).count
-        type(text)
+        Settings.wordsAccepted += take.split(whereSeparator: { $0.isWhitespace }).count
+        type(take)
+        Stats.shared.record(take, app: lastApp)
+        guard !rest.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
+            guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
+            self.suggestion = rest
+            self.overlay.fieldStyle = ctx.style
+            self.overlay.show(rest, at: ctx.caretRect)
+        }
     }
 
     private func type(_ text: String) {

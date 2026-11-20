@@ -1,6 +1,12 @@
 import AppKit
 import ApplicationServices
 
+/// The look of the text in a field, for drawing suggestions that blend in.
+struct TextStyle {
+    let font: NSFont
+    let color: NSColor?
+}
+
 struct FieldContext {
     let element: AXUIElement
     let prefix: String      // text before caret
@@ -9,6 +15,10 @@ struct FieldContext {
     let bundleID: String?
     let appName: String?
     let pid: pid_t
+    /// Website host when the field is inside a web page (any browser), for per-website rules.
+    let domain: String?
+    let caretIndex: Int
+    let style: TextStyle?
 
     /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
     var caretPoint: CGPoint {
@@ -72,7 +82,54 @@ enum AX {
         guard let (rect, h) = caretRect(el, caret: caret, text: ns) else { return nil }
         let app = NSRunningApplication(processIdentifier: pid)
         return FieldContext(element: el, prefix: String(prefix.suffix(1500)), caretRect: rect, lineHeight: h,
-                            bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid)
+                            bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid, domain: webDomain(of: el),
+                            caretIndex: caret, style: textStyle(el, at: caret - 1))
+    }
+
+    /// Host of the web page containing `el`: walks up to the AXWebArea and reads its URL (http/https only).
+    static func webDomain(of el: AXUIElement) -> String? {
+        var cur: AXUIElement? = el
+        for _ in 0..<40 {
+            guard let e = cur else { return nil }
+            if (attr(e, kAXRoleAttribute) as String?) == "AXWebArea" {
+                guard let url: URL = attr(e, kAXURLAttribute), let scheme = url.scheme, scheme.hasPrefix("http"),
+                      var host = url.host?.lowercased() else { return nil }
+                if host.hasPrefix("www.") { host.removeFirst(4) }
+                return host
+            }
+            cur = attr(e, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    /// Font and color of the character at `index`, from the field's attributed string.
+    static func textStyle(_ el: AXUIElement, at index: Int) -> TextStyle? {
+        var r = CFRange(location: max(0, index), length: 1)
+        guard let rv = AXValueCreate(.cfRange, &r) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXAttributedStringForRangeParameterizedAttribute as CFString, rv, &out) == .success,
+              let s = out as! NSAttributedString?, s.length > 0 else { return nil }
+        let attrs = s.attributes(at: 0, effectiveRange: nil)
+        guard let f = attrs[NSAttributedString.Key("AXFont")] as? [String: Any],
+              let size = (f["AXFontSize"] as? NSNumber).map({ CGFloat(truncating: $0) }), size > 4 else { return nil }
+        let font = (f["AXFontName"] as? String).flatMap { NSFont(name: $0, size: size) }
+            ?? (f["AXFontFamily"] as? String).flatMap { NSFontManager.shared.font(withFamily: $0, traits: [], weight: 5, size: size) }
+            ?? NSFont.systemFont(ofSize: size)
+        let fg = attrs[NSAttributedString.Key("AXForegroundColor")]
+        let color = fg.flatMap { CFGetTypeID($0 as CFTypeRef) == CGColor.typeID ? NSColor(cgColor: $0 as! CGColor) : nil }
+        return TextStyle(font: font, color: color)
+    }
+
+    /// Screen rect (Cocoa coordinates) of a range of the field's text.
+    static func screenRect(_ el: AXUIElement, location: Int, length: Int) -> NSRect? {
+        guard let r = bounds(el, location, length) else { return nil }
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: r.minX, y: primaryH - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// The focused element of a given app (works while our own menu is open).
+    static func focusedElement(ofApp pid: pid_t) -> AXUIElement? {
+        attr(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)
     }
 
     private static func bounds(_ el: AXUIElement, _ location: Int, _ length: Int) -> CGRect? {

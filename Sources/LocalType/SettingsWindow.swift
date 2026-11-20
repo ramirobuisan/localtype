@@ -24,16 +24,22 @@ private final class FlippedView: NSView { override var isFlipped: Bool { true } 
 final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     static let shared = SettingsWindow()
 
-    private let pages = ["General", "Context", "Personalization", "Shortcuts", "Battery", "App Settings", "Statistics"]
-    private let symbols = ["gearshape", "text.viewfinder", "wand.and.stars", "command", "battery.100", "slider.horizontal.3", "chart.bar"]
+    private let pages = ["Setup", "General", "Context", "Personalization", "Emoji", "Shortcuts", "Battery", "App Settings", "Statistics"]
+    private let symbols = ["checkmark.seal", "gearshape", "text.viewfinder", "wand.and.stars", "face.smiling", "command", "battery.100",
+                           "slider.horizontal.3", "chart.bar"]
 
     private var window: NSWindow?
     private let sidebar = NSTableView()
     private let scroll = NSScrollView()
     private var retained: [AnyObject] = []
     private var textBindings: [ObjectIdentifier: (String) -> Void] = [:]
-    private let lengths: [(String, Int)] = [("Short (~1 – 2 words)", 6), ("Medium (~2 – 4 words)", 12),
+    private let lengths: [(String, Int)] = [("Current word only", 0), ("Short (~1 – 2 words)", 6), ("Medium (~2 – 4 words)", 12),
                                             ("Long (a phrase)", 32), ("Extra long (a sentence)", 64)]
+
+    func show(page: String) { show(page: pages.firstIndex(of: page) ?? 0) }
+
+    /// Rebuilds the visible page (after a setting changes what it shows).
+    private func reload() { select(max(0, sidebar.selectedRow)) }
 
     func show(page: Int = 0) {
         if window == nil { build() }
@@ -94,6 +100,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         retained = []; textBindings = [:]
         var sections: [NSView]
         switch pages[i] {
+        case "Setup": sections = setup()
+        case "Emoji": sections = emojiPage()
         case "General": sections = general()
         case "Context": sections = context()
         case "Personalization": sections = personalization()
@@ -254,6 +262,96 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     // MARK: Pages
 
+    /// Green "✓ text" or orange "text", optionally followed by a button.
+    private func status(_ ok: Bool, _ okText: String, _ badText: String, button: (String, () -> Void)? = nil) -> NSView {
+        let l = NSTextField(labelWithString: ok ? "✓ " + okText : badText)
+        l.textColor = ok ? .systemGreen : .systemOrange
+        var views: [NSView] = [l]
+        if !ok, let (title, f) = button {
+            let b = NSButton(title: title, target: action { _ in f() }, action: #selector(Trampoline.fire(_:)))
+            b.bezelStyle = .rounded
+            views.append(b)
+        }
+        let st = NSStackView(views: views); st.spacing = 8
+        return st
+    }
+
+    static var inlinePredictionOn: Bool {
+        UserDefaults.standard.object(forKey: "NSAutomaticInlinePredictionEnabled") as? Bool ?? true
+    }
+
+    private func emojiPage() -> [NSView] {
+        let tones = ["Neutral 👋", "Light 👋🏻", "Medium-light 👋🏼", "Medium 👋🏽", "Medium-dark 👋🏾", "Dark 👋🏿"]
+        return [
+            section(nil, [
+                toggle("Emoji suggestions",
+                       "Type “ :” for the emoji you use most, or keep typing a name to search (:fire, :thumbs_up, or :sweat_smile: with a closing colon). Tab inserts the emoji; ↓ and ↑ show the other matches. Search can miss; the macOS emoji picker (⌃⌘Space) is always there as a fallback.",
+                       get: { Settings.emojiCompletion }, set: { Settings.emojiCompletion = $0 }),
+                toggle("Turn emoticons into emoji",
+                       "Typing a text emoticon such as :-)  ;-)  :(  or <3 offers the matching emoji. When off, only the colon search is left.",
+                       indent: true, get: { Settings.emojiEmoticons }, set: { Settings.emojiEmoticons = $0 }),
+            ]),
+            section("Customization", [
+                popup("Preferred skin tone", "Used for emoji that come in different skin tones.",
+                      items: tones, selected: Settings.emojiSkinTone, set: { Settings.emojiSkinTone = $0 }),
+                toggle("Also suggest the neutral variant", "Offers the default yellow version next to your preferred skin tone.",
+                       indent: true, get: { Settings.emojiIncludeNeutral }, set: { Settings.emojiIncludeNeutral = $0 }),
+                popup("Preferred gender", "For people emoji that have separate woman and man versions (police officer, firefighter, scientist…).",
+                      items: ["Gender-neutral 🧑", "Woman 👩", "Man 👨"], selected: Settings.emojiGender,
+                      set: { Settings.emojiGender = $0 }),
+            ]),
+        ]
+    }
+
+    private func setup() -> [NSView] {
+        let ax = AX.trusted(prompt: false)
+        let screen = ScreenContext.permitted
+        let modelStatus = NSTextField(labelWithString: "Checking…")
+        let store = currentStore()
+        store.list { list in
+            let have = list?.contains { store.isActive($0.name) } ?? false
+            modelStatus.stringValue = have ? "✓ " + store.activeName : "No model selected"
+            modelStatus.textColor = have ? .systemGreen : .systemOrange
+            modelStatus.lineBreakMode = .byTruncatingMiddle
+            modelStatus.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        }
+        let manage = NSButton(title: "Manage…", target: action { _ in ModelsWindow.shared.show() }, action: #selector(Trampoline.fire(_:)))
+        manage.bezelStyle = .rounded
+        let modelRow = NSStackView(views: [modelStatus, manage]); modelRow.spacing = 8
+        let predictionOn = SettingsWindow.inlinePredictionOn
+        let ready = ax && !predictionOn
+        return [
+            section(nil, [
+                row(ready ? "All set" : "Almost there",
+                    ready ? "LocalType is ready. The items below are here if you want to check or change them."
+                          : "Fix the orange items below for LocalType to work well.", nil),
+            ]),
+            section("Required", [
+                row("Accessibility permission", "Lets LocalType read the text before your cursor and type the suggestions you accept.",
+                    status(ax, "Granted", "Not granted", button: ("Grant…", {
+                        _ = AX.trusted(prompt: true)
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                    }))),
+                row("AI model", "The model that writes the suggestions.", modelRow),
+            ]),
+            section("Recommended", [
+                row("Screen Recording permission",
+                    "For screen context: the window you're typing in is read on this Mac to make suggestions fit. Nothing is stored or sent anywhere.",
+                    status(screen, "Granted", "Not granted", button: ("Grant…", {
+                        ScreenContext.requestPermission()
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }))),
+                row("macOS inline predictive text",
+                    "macOS's own inline predictions compete with LocalType for the same spot and the same Tab key. Turn off “Show inline predictive text” in System Settings → Keyboard → Input Sources → Edit….",
+                    status(!predictionOn, "Off", "On — conflicts", button: ("Open Keyboard Settings", {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+                    }))),
+                toggle("Clipboard context", "Adds the start of your clipboard text to the prompt so suggestions reflect what you're working with. Processed on this Mac only.",
+                       get: { Settings.useClipboard }, set: { Settings.useClipboard = $0 }),
+            ]),
+        ]
+    }
+
     private func general() -> [NSView] {
         let store = currentStore()
         let modelPopup = NSPopUpButton()
@@ -280,6 +378,12 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 toggle("Show menu bar icon", "Display the LocalType icon in the menu bar. If hidden, reopen the app to get back here.",
                        get: { Settings.showMenuBarIcon }, set: { Settings.showMenuBarIcon = $0 }),
             ]),
+            section("Appearance", [
+                popup("Suggestion style",
+                      "Inline draws the suggestion as faded text in the field's own font, right where you type. Bubble shows it in a small box next to the cursor.",
+                      items: ["Inline, in the field's font", "Bubble"], selected: Settings.suggestionStyle,
+                      set: { Settings.suggestionStyle = $0 }),
+            ]),
             section("AI Settings", [
                 row("AI model", Settings.backend == "embedded" ? "Built-in engine — runs entirely inside the app."
                     : Settings.backend == "mlxserve" ? "MLX-Serve at \(Settings.mlxEndpoint). Smaller models answer faster."
@@ -299,18 +403,13 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                        "Normally LocalType suggests only at the end of a line. Turn this on to also get suggestions when there is still text after the cursor on the same line.",
                        get: { Settings.completeInside }, set: { Settings.completeInside = $0 }),
                 popup("Maximum completion length",
-                      "Controls how long generated completions can be. Medium is recommended: longer completions are slower and more likely to drift from your intent — the next-word shortcut lets you take just part of them.",
+                      "Controls how long generated completions can be. Medium is recommended: longer completions are slower and more likely to drift from your intent — the next-word shortcut lets you take just part of them. “Current word only” finishes the word you're typing and never suggests the next one: spelling help without writing suggestions.",
                       items: lengths.map { $0.0 },
                       selected: lengths.enumerated().min { abs($0.element.1 - Settings.maxTokens) < abs($1.element.1 - Settings.maxTokens) }?.offset ?? 1,
                       set: { Settings.maxTokens = self.lengths[$0].1 }),
             ]),
             section("Privacy", [
                 row("Nothing leaves your Mac", "Completions run on the built-in engine. There are no analytics, crash reports or accounts. Only a model download or an Ollama server you configure uses the network.", nil),
-            ]),
-            section("Emoji", [
-                toggle("Emoji completion",
-                       "Type a colon and part of a name, like :fire or :thumbs_up, to get an emoji. Tab inserts it; ↓ and ↑ show the other matches. Emoji you use often come first.",
-                       get: { Settings.emojiCompletion }, set: { Settings.emojiCompletion = $0 }),
             ]),
             section("Autocorrect", [
                 toggle("Don't show completions when typo suspected",
@@ -332,7 +431,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                            ScreenContext.shared.clear()
                            ScreenContext.shared.prewarm()
                            if on, !ScreenContext.permitted { ScreenContext.requestPermission() }
-                           self.select(1)
+                           self.reload()
                        }),
                 Settings.useScreen
                     ? (ScreenContext.permitted
@@ -377,7 +476,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         existingRow.orientation = .horizontal
 
         let reset = NSButton(title: "Reset to Default", target: action { _ in
-            Settings.instructions = ""; self.select(2)
+            Settings.instructions = ""; self.reload()
         }, action: #selector(Trampoline.fire(_:)))
         reset.controlSize = .small
 
@@ -393,6 +492,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                     "Shows the model a few of your past sentences that resemble what you're typing. Higher values show more; too many may occasionally bias toward a less fitting word. Slightly slower, since the prompt changes each time.",
                     sliderRow, indent: true),
                 existingRow,
+                button("Recorded texts", "See, search and delete what has been recorded. Per-app deletion is in App Settings.",
+                       "Show Typing History") { HistoryWindow.shared.show() },
             ]),
             section("Custom AI Instructions", [
                 row("Custom AI Instructions", "Describe how you write: your occupation, languages, tone. A few sentences work best; keep it short — it is added to every prompt.", reset),
@@ -411,8 +512,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                          get: { Settings.keyAcceptWord }, set: { Settings.keyAcceptWord = $0 }),
                 toggle("Include trailing space", "Accepting a single word also inserts the space after it.", indent: true,
                        get: { Settings.includeTrailingSpace }, set: { Settings.includeTrailingSpace = $0 }),
-                toggle("Include trailing punctuation", "Punctuation attached to a word (like a period) is accepted along with it.", indent: true,
-                       get: { Settings.includeTrailingPunct }, set: { Settings.includeTrailingPunct = $0 }),
+                popup("Include trailing punctuation",
+                      "Whether accepting also inserts the comma or period after the words. Leaving it out helps when you keep writing, or don't want a chat message to end in a period. Punctuation left out stays in the suggestion, so another press inserts it.",
+                      items: ["Never", "Only with full completion", "Always"],
+                      selected: Settings.punctuationMode, set: { Settings.punctuationMode = $0 }),
             ]),
             section(nil, [
                 popup("When you press Escape",
@@ -432,7 +535,34 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     }
 
     private func battery() -> [NSView] {
-        [
+        let modelPopup = NSPopUpButton()
+        modelPopup.addItem(withTitle: "Same as usual")
+        currentStore().list { list in
+            for m in list ?? [] { modelPopup.addItem(withTitle: m.name) }
+            if !Settings.batteryModel.isEmpty {
+                if modelPopup.item(withTitle: Settings.batteryModel) == nil { modelPopup.addItem(withTitle: Settings.batteryModel) }
+                modelPopup.selectItem(withTitle: Settings.batteryModel)
+            }
+        }
+        modelPopup.target = action { [weak modelPopup] _ in
+            guard let p = modelPopup else { return }
+            Settings.batteryModel = p.indexOfSelectedItem <= 0 ? "" : (p.titleOfSelectedItem ?? "")
+        }
+        modelPopup.action = #selector(Trampoline.fire(_:))
+        let plugged = !Controller.onBattery
+        return [
+            section(nil, [
+                row(plugged ? "You're plugged in" : "You're on battery power",
+                    plugged ? "The settings below take effect automatically when the Mac switches to battery." : "The settings below are in effect now.", nil),
+            ]),
+            section("On Battery Power", [
+                toggle("Only show completions on demand",
+                       "LocalType stops suggesting on its own and waits for the force-activate shortcut (set it in Shortcuts), so you get suggestions only where you want them.",
+                       get: { Settings.batteryOnDemand }, set: { Settings.batteryOnDemand = $0 }),
+                row("Use a smaller model", "A lighter model uses less power and answers faster, with somewhat weaker suggestions.", modelPopup),
+                toggle("Generate slightly shorter completions", "Shorter completions finish sooner, which saves power.",
+                       get: { Settings.batteryShorter }, set: { Settings.batteryShorter = $0 }),
+            ]),
             section("Power", [
                 toggle("Pause on battery power", "Turns completions off whenever the Mac isn't plugged in.",
                        get: { Settings.pauseOnBattery }, set: { Settings.pauseOnBattery = $0 }),
@@ -442,53 +572,214 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         ]
     }
 
-    private func appSettings() -> [NSView] {
-        let listKey = Settings.enabledByDefault ? "Disabled apps" : "Enabled apps"
-        let current = Settings.enabledByDefault ? Settings.disabledApps : Settings.enabledApps
-        let apply: (String) -> Void = { text in
-            let ids = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            if Settings.enabledByDefault { Settings.disabledApps = ids } else { Settings.enabledApps = ids }
+    /// A list row: icon, title and subtitle on the left, controls on the right.
+    private func listRow(icon: NSImage?, _ title: String, _ subtitle: String?, _ controls: [NSView]) -> NSView {
+        let img = NSImageView(image: icon ?? NSImage())
+        img.imageScaling = .scaleProportionallyUpOrDown
+        img.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        img.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        let t = NSTextField(labelWithString: title)
+        var texts: [NSView] = [t]
+        if let subtitle {
+            let st = NSTextField(labelWithString: subtitle)
+            st.font = .systemFont(ofSize: 11); st.textColor = .secondaryLabelColor
+            st.lineBreakMode = .byTruncatingMiddle
+            texts.append(st)
         }
-        let area = textArea(height: 130, text: current.joined(separator: "\n"), onChange: apply)
-        let tv = ((area as? NSStackView)?.arrangedSubviews.first as? NSScrollView)?.documentView as? NSTextView
+        let col = NSStackView(views: texts); col.orientation = .vertical; col.alignment = .leading; col.spacing = 1
+        col.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for c in controls { c.setContentHuggingPriority(.required, for: .horizontal) }
+        let h = NSStackView(views: [img, col, spacer] + controls)
+        h.alignment = .centerY; h.spacing = 10
+        h.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
+        return h
+    }
 
-        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
-            .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }
-        let pop = NSPopUpButton()
-        pop.addItem(withTitle: "Add a running app…")
-        for a in apps { pop.addItem(withTitle: a.localizedName ?? a.bundleIdentifier!) }
-        pop.target = action { [weak pop] _ in
-            guard let p = pop, p.indexOfSelectedItem > 0 else { return }
-            let id = apps[p.indexOfSelectedItem - 1].bundleIdentifier!
-            var list = (Settings.enabledByDefault ? Settings.disabledApps : Settings.enabledApps)
-            if !list.contains(id) { list.append(id) }
-            if Settings.enabledByDefault { Settings.disabledApps = list } else { Settings.enabledApps = list }
-            tv?.string = list.joined(separator: "\n")
-            p.selectItem(at: 0)
+    private func onOffSwitch(_ on: Bool, _ set: @escaping (Bool) -> Void) -> NSSwitch {
+        let sw = NSSwitch()
+        sw.state = on ? .on : .off
+        sw.target = action { s in set((s as? NSSwitch)?.state == .on) }
+        sw.action = #selector(Trampoline.fire(_:))
+        return sw
+    }
+
+    /// "⋯" pull-down with named actions.
+    private func moreMenu(_ items: [(String, () -> Void)]) -> NSPopUpButton {
+        let p = NSPopUpButton(frame: .zero, pullsDown: true)
+        p.bezelStyle = .texturedRounded
+        p.addItem(withTitle: "⋯")
+        for (title, f) in items {
+            let mi = NSMenuItem(title: title, action: #selector(Trampoline.fire(_:)), keyEquivalent: "")
+            mi.target = action { _ in f() }
+            p.menu?.addItem(mi)
         }
-        pop.action = #selector(Trampoline.fire(_:))
+        return p
+    }
+
+    private func appInfo(_ bundleID: String) -> (name: String, icon: NSImage?) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return (bundleID, nil) }
+        let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        return (name, NSWorkspace.shared.icon(forFile: url.path))
+    }
+
+    private func addApp() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK else { return }
+        var rules = Settings.appRules
+        for url in panel.urls {
+            guard let id = Bundle(url: url)?.bundleIdentifier, rules[id] == nil else { continue }
+            rules[id] = !Settings.enabledByDefault   // adding an app is usually to flip it from the default
+        }
+        Settings.appRules = rules
+        reload()
+    }
+
+    private func addWebsite() {
+        let a = NSAlert()
+        a.messageText = "Add a website"
+        a.informativeText = "Enter a domain such as mail.google.com or google.com. A domain also covers its subdomains, in any browser."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "example.com"
+        a.accessoryView = field
+        a.addButton(withTitle: "Add"); a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = field
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        var d = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let u = URL(string: d.contains("://") ? d : "https://" + d), let host = u.host { d = host }
+        if d.hasPrefix("www.") { d.removeFirst(4) }
+        guard d.contains("."), !d.contains(" ") else { return }
+        var rules = Settings.domainRules
+        rules[d] = rules[d] ?? !Settings.enabledByDefault
+        Settings.domainRules = rules
+        reload()
+    }
+
+    private func appSettings() -> [NSView] {
+        let apps = Settings.appRules.map { (id: $0.key, on: $0.value, info: appInfo($0.key)) }
+            .sorted { $0.info.name.localizedCaseInsensitiveCompare($1.info.name) == .orderedAscending }
+        var appRows: [NSView] = apps.map { app in
+            let n = History.shared.count(app: app.id)
+            var menu: [(String, () -> Void)] = [("Remove from list", {
+                var r = Settings.appRules; r[app.id] = nil; Settings.appRules = r; self.reload()
+            })]
+            if n > 0 {
+                menu.insert(("Delete typing history (\(n))…", {
+                    let a = NSAlert()
+                    a.messageText = "Delete the typing history recorded in \(app.info.name)?"
+                    a.informativeText = "\(n) recorded texts will be removed. This can't be undone."
+                    a.addButton(withTitle: "Delete"); a.addButton(withTitle: "Cancel")
+                    if a.runModal() == .alertFirstButtonReturn { History.shared.delete(app: app.id); self.reload() }
+                }), at: 0)
+            }
+            return listRow(icon: app.info.icon, app.info.name, n > 0 ? "\(app.id) · \(n) texts recorded" : app.id, [
+                onOffSwitch(app.on) { on in var r = Settings.appRules; r[app.id] = on; Settings.appRules = r },
+                moreMenu(menu),
+            ])
+        }
+        if appRows.isEmpty {
+            appRows = [row("No apps yet", "Every app follows the default above. Add an app to give it its own setting, or use “Disable in …” in the menu-bar menu.", nil)]
+        }
+        let addAppBtn = NSButton(title: "Add App…", target: action { _ in self.addApp() }, action: #selector(Trampoline.fire(_:)))
+        addAppBtn.bezelStyle = .rounded
+
+        let sites = Settings.domainRules.sorted { $0.key < $1.key }
+        var siteRows: [NSView] = sites.map { site in
+            listRow(icon: NSImage(systemSymbolName: "globe", accessibilityDescription: nil), site.key, nil, [
+                onOffSwitch(site.value) { on in var r = Settings.domainRules; r[site.key] = on; Settings.domainRules = r },
+                moreMenu([("Remove from list", { var r = Settings.domainRules; r[site.key] = nil; Settings.domainRules = r; self.reload() })]),
+            ])
+        }
+        if siteRows.isEmpty {
+            siteRows = [row("No websites yet", "A website rule applies in every browser and wins over the browser's own app setting.", nil)]
+        }
+        let addSiteBtn = NSButton(title: "Add Website…", target: action { _ in self.addWebsite() }, action: #selector(Trampoline.fire(_:)))
+        addSiteBtn.bezelStyle = .rounded
 
         return [
-            section(listKey, [
-                row(listKey, Settings.enabledByDefault
-                    ? "LocalType is on everywhere except these apps. One bundle ID per line."
-                    : "LocalType is off everywhere except these apps (see “Enable completions by default”). One bundle ID per line.", pop),
-                area,
+            section(nil, [
+                toggle("Enable completions by default", "Apps and websites without their own setting below follow this.",
+                       get: { Settings.enabledByDefault }, set: { Settings.enabledByDefault = $0 }),
             ]),
+            section("Apps", appRows),
+            NSStackView(views: [addAppBtn]),
+            section("Websites", siteRows),
+            NSStackView(views: [addSiteBtn]),
         ]
     }
 
+    private var statsSpan = 30
+    private var statsGrouping = Stats.Grouping.day
+    private var statsMetric = Stats.Metric.words
+
+    /// A big number with a caption under it.
+    private func tile(_ value: String, _ caption: String) -> NSView {
+        let v = NSTextField(labelWithString: value)
+        v.font = .monospacedDigitSystemFont(ofSize: 24, weight: .semibold)
+        let c = NSTextField(labelWithString: caption)
+        c.font = .systemFont(ofSize: 11); c.textColor = .secondaryLabelColor
+        let st = NSStackView(views: [v, c]); st.orientation = .vertical; st.alignment = .leading; st.spacing = 2
+        return st
+    }
+
     private func statistics() -> [NSView] {
+        let today = Stats.shared.today
+        let tiles = NSStackView(views: [tile("\(today.completions)", "Completions"), tile("\(today.words)", "Words"),
+                                        tile("\(today.chars)", "Characters")])
+        tiles.distribution = .fillEqually
+        tiles.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+
+        let spans = [(7, "Last 7 Days"), (30, "Last 30 Days"), (90, "Last 90 Days"), (365, "Last 12 Months")]
+        let chart = BarChartView()
+        chart.grouping = statsGrouping
+        chart.data = Stats.shared.series(span: statsSpan, grouping: statsGrouping, metric: statsMetric)
+        let sum = Stats.shared.summary(span: statsSpan, metric: statsMetric)
+        func picker(_ items: [String], _ sel: Int, _ f: @escaping (Int) -> Void) -> NSPopUpButton {
+            let p = NSPopUpButton()
+            p.addItems(withTitles: items); p.selectItem(at: sel)
+            p.target = action { s in f((s as? NSPopUpButton)?.indexOfSelectedItem ?? 0); self.reload() }
+            p.action = #selector(Trampoline.fire(_:))
+            return p
+        }
+        let pickers = NSStackView(views: [
+            picker(spans.map(\.1), spans.firstIndex { $0.0 == statsSpan } ?? 1) { self.statsSpan = spans[$0].0 },
+            picker(Stats.Grouping.allCases.map(\.title), statsGrouping.rawValue) { self.statsGrouping = Stats.Grouping(rawValue: $0)! },
+            picker(Stats.Metric.allCases.map(\.title), statsMetric.rawValue) { self.statsMetric = Stats.Metric(rawValue: $0)! },
+        ])
+        pickers.spacing = 8
+        pickers.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 0, right: 14)
+        let chartBox = NSStackView(views: [chart])
+        chartBox.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
+        chart.widthAnchor.constraint(equalTo: chartBox.widthAnchor, constant: -28).isActive = true
+        let summary = NSStackView(views: [tile("\(sum.total)", "Total \(statsMetric.title.lowercased())"),
+                                          tile("\(sum.perActiveDay)", "Daily average (active days)"),
+                                          tile(Stats.timeSaved(words: sum.words), "Estimated time saved")])
+        summary.distribution = .fillEqually
+        summary.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 12, right: 14)
+
         let rate = Settings.shown > 0 ? String(format: "%.0f%%", Double(Settings.accepted) / Double(Settings.shown) * 100) : "–"
         return [
-            section("Usage (stored only on this Mac)", [
+            section("Today", [tiles]),
+            section("Completion Statistics", [pickers, chartBox, summary]),
+            section("All Time (stored only on this Mac)", [
                 row("Suggestions shown", nil, NSTextField(labelWithString: "\(Settings.shown)")),
                 row("Suggestions accepted", nil, NSTextField(labelWithString: "\(Settings.accepted)")),
                 row("Acceptance rate", nil, NSTextField(labelWithString: rate)),
-                row("Words inserted", nil, NSTextField(labelWithString: "\(Settings.wordsAccepted)")),
+                row("Words inserted", Settings.wordsAccepted > 0 ? Stats.timeSaved(words: Settings.wordsAccepted) + " of typing saved" : nil,
+                    NSTextField(labelWithString: "\(Settings.wordsAccepted)")),
                 row("Typo fixes applied", nil, NSTextField(labelWithString: "\(Settings.fixesApplied)")),
                 row("Emoji inserted", nil, NSTextField(labelWithString: "\(Settings.emojiInserted)")),
-                button("Reset statistics", nil, "Reset…") { Settings.resetStats(); self.select(6) },
+                button("Reset statistics", "Clears all numbers on this page, including the daily history.", "Reset…") {
+                    let a = NSAlert()
+                    a.messageText = "Reset all statistics?"
+                    a.informativeText = "This can't be undone."
+                    a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
+                    if a.runModal() == .alertFirstButtonReturn { Settings.resetStats(); Stats.shared.reset(); self.reload() }
+                },
             ]),
         ]
     }

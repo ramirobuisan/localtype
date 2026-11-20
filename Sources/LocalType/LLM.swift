@@ -35,7 +35,7 @@ final class LLM {
         if !header.isEmpty { header += "\n" }
 
         if Settings.backend == "mlxserve" {
-            guard let req = MLXServeCompletion.request(context: header, text: prefix, maxTokens: Settings.maxTokens) else {
+            guard let req = MLXServeCompletion.request(context: header, text: prefix, maxTokens: Settings.effectiveMaxTokens) else {
                 return completion(nil)
             }
             task = session.dataTask(with: req) { data, _, error in
@@ -47,8 +47,9 @@ final class LLM {
         }
 
         if Settings.backend == "embedded" {
-            guard let path = GGUFStore.activePath else { return completion(nil) }
-            LlamaEngine.shared.complete(path: path, prompt: header + prefix, maxTokens: Settings.maxTokens, completion: completion)
+            let battery = Settings.batteryModelNow.map(GGUFStore.path(for:)).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+            guard let path = battery ?? GGUFStore.activePath else { return completion(nil) }
+            LlamaEngine.shared.complete(path: path, prompt: header + prefix, maxTokens: Settings.effectiveMaxTokens, completion: completion)
             return
         }
 
@@ -57,13 +58,13 @@ final class LLM {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "model": Settings.model,
+            "model": Settings.batteryModelNow ?? Settings.model,
             "prompt": header + prefix,
             "raw": true,
             "stream": false,
             "keep_alive": "30m",
             "options": [
-                "num_predict": Settings.maxTokens,
+                "num_predict": Settings.effectiveMaxTokens,
                 "temperature": 0.2,
                 "top_p": 0.9,
                 "stop": ["\n", "\r"],

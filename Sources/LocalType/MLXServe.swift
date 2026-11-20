@@ -120,12 +120,13 @@ enum MLXServeCompletion {
         """
 
     static func request(context: String, text: String, maxTokens: Int) -> URLRequest? {
-        guard let u = URL(string: Settings.mlxEndpoint + "/v1/chat/completions"), !Settings.mlxModel.isEmpty else { return nil }
+        let model = Settings.batteryModelNow ?? Settings.mlxModel
+        guard let u = URL(string: Settings.mlxEndpoint + "/v1/chat/completions"), !model.isEmpty else { return nil }
         var r = URLRequest(url: u)
         r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "model": Settings.mlxModel,
+            "model": model,
             "messages": [["role": "system", "content": system], ["role": "user", "content": context + text + "‸"]],
             "max_tokens": maxTokens,
             "temperature": 0.2,

@@ -5,7 +5,11 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
 - Ghost-text suggestion at the caret · each **Tab** accepts one word · **⌥Tab** accepts it all · **Esc** dismisses
 - Models: MLX-Serve (default when installed; uses any chat model it has, nothing downloaded), a built-in [llama.cpp](https://github.com/ggml-org/llama.cpp) engine (Metal, download / import GGUF in-app), or Ollama
 - Screen context: reads the window you're typing in (ScreenCaptureKit + on-device Vision OCR) so replies fit the conversation
-- Emoji completion: `:fire` → 🔥, `:thumbs_up` → 👍 (↓/↑ for other matches)
+- Emoji: `:fire` → 🔥, `:thumbs_up:`, a lone ` :` for your most-used, emoticons (`:-)` → 🙂, `<3` → ❤️), preferred skin tone and gender (↓/↑ for other matches)
+- Inline ghost text in the field's own font (read via Accessibility), or a bubble; typo fixes strike through the typo
+- Per-app and per-website rules (websites work in any browser), typing-history viewer with per-app deletion
+- Statistics: today, a 7/30/90/365-day chart by day/week/month, daily average, estimated time saved
+- Battery: suggestions only on demand, a smaller model, shorter completions; "current word only" length; Setup page that flags macOS inline predictions
 - Per-app enable/disable, typo guard with suggested fixes, custom style instructions, optional clipboard context,
   optional local writing history for personalization, battery pausing, remappable shortcuts, local statistics
 - No accounts, no analytics, nothing sent anywhere

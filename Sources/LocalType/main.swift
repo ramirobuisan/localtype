@@ -50,10 +50,16 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-mlx
 
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
-    for text in CommandLine.arguments.dropFirst(2) {
+    var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []
+    while !emojiArgs.isEmpty {   // "-key value" pairs are argument-domain settings, not texts
+        let a = emojiArgs.removeFirst()
+        if a.hasPrefix("-"), !a.hasPrefix("--"), a.count > 2, !emojiArgs.isEmpty, a.dropFirst().first!.isLetter { emojiArgs.removeFirst() } else { texts.append(a) }
+    }
+    for text in texts {
+        if let (item, n) = Emoji.emoticon(in: text) { print("\(text.debugDescription) → emoticon (\(n)): \(item.char)"); continue }
         let q = Emoji.query(in: text)
-        let hits = q.map { Emoji.search($0) } ?? []
-        print("\(text.debugDescription) → query \(q.map { "\"\($0)\"" } ?? "nil"): " + hits.map { "\($0.char) \($0.name)" }.joined(separator: ", "))
+        let hits = q.map { Emoji.search($0.query) } ?? []
+        print("\(text.debugDescription) → query \(q.map { "\"\($0.query)\" (\($0.length))" } ?? "nil"): " + hits.map { "\($0.char) \($0.name)" }.joined(separator: ", "))
     }
     exit(0)
 }
