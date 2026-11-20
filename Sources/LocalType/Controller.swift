@@ -145,6 +145,7 @@ final class Controller {
 
     private var lastPrefix = ""
     private var lastApp: String?
+    private var lastElement: AXUIElement?
 
     private func trigger(force: Bool = false) {
         guard Date() >= pausedUntil || force else { return }
@@ -153,8 +154,8 @@ final class Controller {
         guard isAllowed(ctx.bundleID, domain: ctx.domain) else { return }
         lastPrefix = ctx.prefix
         lastApp = ctx.bundleID
-        if Settings.recordWriting, Settings.recordWithoutAccept,
-           let sentence = History.lastSentence(ctx.prefix, completed: true) { History.shared.add(sentence, app: ctx.bundleID) }
+        lastElement = ctx.element
+        recordNewSentences(ctx.prefix, element: ctx.element, app: ctx.bundleID)
 
         if Settings.emojiCompletion {
             if Settings.emojiEmoticons, let (item, length) = Emoji.emoticon(in: ctx.prefix) {
@@ -226,9 +227,12 @@ final class Controller {
     }
 
     /// "Current word only": the letters that finish the word being typed, or nothing if the caret isn't mid-word.
+    /// Only real words: this mode is spelling help, so a garbled completion is worse than none.
     static func restOfWord(_ text: String, after prefix: String) -> String {
         guard let last = prefix.last, last.isLetter, let first = text.first, first.isLetter else { return "" }
-        return String(text.prefix { $0.isLetter || $0 == "'" || $0 == "’" })
+        let rest = String(text.prefix { $0.isLetter || $0 == "'" || $0 == "’" })
+        let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
+        return Spelling.isWord(tail + rest) ? rest : ""
     }
 
     func dismiss() {
@@ -266,9 +270,45 @@ final class Controller {
         return t == kIOPMBatteryPowerKey
     }
 
+    /// Starts of sentences in which a suggestion was accepted (for "record only where I accepted one").
+    private var acceptedSentenceStarts: [String] = []
+
+    /// Typing history bookkeeping: the field and text seen last time, so only newly written text is recorded.
+    private var historyElement: AXUIElement?
+    private var historyPrefix = ""
+
+    /// Saves every sentence finished in the text added to this field since the last look. The first look at a
+    /// field only sets the baseline, so text that was already there (a quoted email, pasted text) is never saved.
+    private func recordNewSentences(_ text: String, element: AXUIElement?, app: String?) {
+        guard Settings.recordWriting else { return }
+        defer { historyPrefix = text; historyElement = element }
+        guard let element, let prev = historyElement, CFEqual(prev, element) else { return }
+        let common = zip(text, historyPrefix).prefix { $0 == $1 }.count
+        guard common < text.count else { return }
+        let from = text.index(text.startIndex, offsetBy: common)
+        var i = from
+        while i < text.endIndex {
+            let next = text.index(after: i)
+            // A sentence end: . ! or ? followed by whitespace or the end ("3.5" and "e.g" don't count).
+            if ".!?".contains(text[i]), next == text.endIndex || text[next].isWhitespace,
+               let sentence = History.lastSentence(String(text[...i]), completed: true) {
+                let accepted = acceptedSentenceStarts.contains { sentence.hasPrefix($0) }
+                if Settings.recordWithoutAccept || accepted { History.shared.add(sentence, app: app) }
+            }
+            i = next
+        }
+    }
+
     private func recordAccepted(_ text: String) {
-        guard Settings.recordWriting, let sentence = History.lastSentence(lastPrefix + text, completed: false) else { return }
-        History.shared.add(sentence, app: lastApp)
+        guard Settings.recordWriting else { return }
+        let full = lastPrefix + text
+        if let partial = History.lastSentence(full, completed: false) {
+            acceptedSentenceStarts.append(partial)
+            if acceptedSentenceStarts.count > 30 { acceptedSentenceStarts.removeFirst() }
+        }
+        // Record now if the accepted text finished a sentence: the next keystroke may never come.
+        recordNewSentences(full, element: lastElement, app: lastApp)
+        lastPrefix = full
     }
 
     private func applyFix(delete n: Int, with text: String) {
@@ -326,6 +366,7 @@ final class Controller {
         // Let the target app apply the insert, then re-anchor the remainder at the new caret.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
             guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
+            self.lastPrefix = ctx.prefix
             self.suggestion = rest
             self.overlay.fieldStyle = ctx.style
             self.overlay.show(rest, at: ctx.caretRect)
@@ -348,6 +389,7 @@ final class Controller {
         guard !rest.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
             guard let self, self.suggestion == nil, let ctx = AX.readContext() else { return }
+            self.lastPrefix = ctx.prefix
             self.suggestion = rest
             self.overlay.fieldStyle = ctx.style
             self.overlay.show(rest, at: ctx.caretRect)

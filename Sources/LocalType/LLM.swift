@@ -40,7 +40,7 @@ final class LLM {
             }
             task = session.dataTask(with: req) { data, _, error in
                 guard error == nil, let data, let reply = MLXServeCompletion.parse(data) else { return completion(nil) }
-                completion(MLXServeCompletion.join(reply, after: prefix))
+                completion(MLXServeCompletion.join(reply.text, after: prefix, cut: reply.cut))
             }
             task?.resume()
             return

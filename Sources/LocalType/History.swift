@@ -42,13 +42,20 @@ final class History {
     /// Last sentence of `text` (text after the final . ! ? or newline).
     static func lastSentence(_ text: String, completed: Bool) -> String? {
         var t = text.trimmingCharacters(in: .whitespaces)
+        var end = ""
         if completed {
             guard let l = t.last, ".!?".contains(l) else { return nil }
-            t.removeLast()
+            end = String(t.removeLast())   // keep "?" and "!" as written
         }
         let start = t.lastIndex(where: { ".!?\n".contains($0) }).map { t.index(after: $0) } ?? t.startIndex
         let s = String(t[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return s.isEmpty ? nil : s + (completed ? "." : "")
+        return s.isEmpty ? nil : s + end
+    }
+
+    /// The last finished sentence in `text` (ending in . ! or ?), even if more text follows it.
+    static func lastCompletedSentence(_ text: String) -> String? {
+        guard let end = text.lastIndex(where: { ".!?".contains($0) }) else { return nil }
+        return lastSentence(String(text[...end]), completed: true)
     }
 
     /// Past sentences sharing words with what's being typed, most relevant first.

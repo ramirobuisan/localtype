@@ -42,7 +42,7 @@ enum Settings {
     }
     /// Token budget for a completion; 0 = "current word only" (finish the word being typed, never the next one).
     static var maxTokens: Int {
-        get { d.object(forKey: "maxTokens") as? Int ?? 12 }
+        get { (d.object(forKey: "maxTokens") == nil ? 12 : d.integer(forKey: "maxTokens")) }
         set { d.set(newValue, forKey: "maxTokens") }
     }
     static var currentWordOnly: Bool { maxTokens == 0 }
@@ -73,7 +73,7 @@ enum Settings {
         !batteryModel.isEmpty && Controller.onBattery ? batteryModel : nil
     }
     static var debounceMs: Int {
-        get { d.object(forKey: "debounceMs") as? Int ?? 250 }
+        get { (d.object(forKey: "debounceMs") == nil ? 250 : d.integer(forKey: "debounceMs")) }
         set { d.set(newValue, forKey: "debounceMs") }
     }
     /// Free-form writing-style / language hint prepended to the prompt.
@@ -221,7 +221,7 @@ enum Settings {
     /// Trailing punctuation when accepting: 0 = never, 1 = only with the full completion, 2 = always.
     /// Punctuation left out stays in the suggestion, so another press inserts it.
     static var punctuationMode: Int {
-        get { d.object(forKey: "punctuationMode") as? Int ?? (d.bool(forKey: "includeTrailingPunct") ? 2 : 1) }
+        get { d.object(forKey: "punctuationMode") == nil ? (d.bool(forKey: "includeTrailingPunct") ? 2 : 1) : d.integer(forKey: "punctuationMode") }
         set { d.set(newValue, forKey: "punctuationMode") }
     }
     /// true = Esc dismisses and pauses suggestions for a few seconds.

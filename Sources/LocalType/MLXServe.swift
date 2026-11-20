@@ -139,16 +139,21 @@ enum MLXServeCompletion {
         return r
     }
 
-    static func parse(_ data: Data) -> String? {
+    /// The reply text, and whether it was cut off by the token limit.
+    static func parse(_ data: Data) -> (text: String, cut: Bool)? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msg = ((obj["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String
+              let choice = (obj["choices"] as? [[String: Any]])?.first,
+              let msg = (choice["message"] as? [String: Any])?["content"] as? String
         else { return nil }
-        return msg
+        return (msg, choice["finish_reason"] as? String == "length")
     }
 
     /// Chat models reply as a separate message, so they drop the joining space, sometimes echo the end of
     /// the text, or wrap the reply in quotes. Turn the reply into what should be typed after `prefix`.
-    static func join(_ reply: String, after prefix: String) -> String {
+    static func join(_ reply: String, after prefix: String, cut: Bool = false) -> String {
+        var reply = reply
+        // Cut off by the token limit right after an apostrophe ("before Friday'"): drop the dangling mark.
+        if cut, let last = reply.last, last == "'" || last == "’", reply.dropLast().last?.isLetter == true { reply.removeLast() }
         var t = reply.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "‸", with: "")
         if let nl = t.firstIndex(of: "\n") { t = String(t[..<nl]) }
         t = t.trimmingCharacters(in: .whitespaces)
@@ -175,6 +180,7 @@ enum MLXServeCompletion {
         if ".,;:!?)]}…%".contains(first) || first == "'" || first == "’" { return t }
         if last.isLetter || last.isNumber {
             // Mid-word: the reply finishes the word ("I'll send the docum" + "ents").
+            t = repairOverlap(prefix, t)
             return finishesWord(prefix, t) ? t : " " + t
         }
         if "([{\"“‘/-".contains(last) { return t }
@@ -206,6 +212,19 @@ enum MLXServeCompletion {
         "y", "e", "o", "u", "de", "la", "el", "en", "un", "una", "que", "se", "lo", "le", "mi", "tu", "su", "es", "al", "del", "con", "por",
     ]
 
+    /// Small models sometimes repeat the end of a partial word ("timel" → "eline" for "timeline").
+    /// If dropping the repeated letters turns the join into a real word (and the plain join isn't one), drop them.
+    private static func repairOverlap(_ prefix: String, _ reply: String) -> String {
+        let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
+        let head = String(reply.prefix { $0.isLetter })
+        guard tail.count >= 2, !head.isEmpty, !Spelling.isWord(tail + head) else { return reply }
+        for k in stride(from: min(tail.count, head.count), through: 1, by: -1)
+        where tail.suffix(k).lowercased() == head.prefix(k).lowercased() && Spelling.isWord(tail + head.dropFirst(k)) {
+            return String(reply.dropFirst(k))
+        }
+        return reply
+    }
+
     /// True when the reply continues the word the text ends in: that word isn't a word yet ("docum"),
     /// or the joined form is a normal completion of it ("rem" + "ind") and the reply doesn't simply start
     /// with a short word of its own ("in" + "to the store").
@@ -213,18 +232,22 @@ enum MLXServeCompletion {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
         guard !tail.isEmpty, !head.isEmpty else { return false }
-        if !isWord(tail) { return true }
+        if !Spelling.isWord(tail) { return true }
         if shortWords.contains(head.lowercased()) { return false }
         let joined = tail + head
-        guard isWord(joined) else { return false }
-        if !isWord(head) { return true }
+        guard Spelling.isWord(joined) else { return false }
+        if !Spelling.isWord(head) { return true }
         let r = NSRange(location: 0, length: (tail as NSString).length)
         let completions = NSSpellChecker.shared.completions(forPartialWordRange: r, in: tail, language: nil, inSpellDocumentWithTag: 0) ?? []
         return completions.contains { $0.caseInsensitiveCompare(joined) == .orderedSame }
     }
 
+}
+
+/// Dictionary checks in the user's own languages (e.g. English and Spanish).
+enum Spelling {
     /// Spell-checker languages matching the user's preferred languages (e.g. English and Spanish).
-    private static let languages: [String] = {
+    static let languages: [String] = {
         let available = NSSpellChecker.shared.availableLanguages
         var out: [String] = []
         for pref in Locale.preferredLanguages {
@@ -236,7 +259,7 @@ enum MLXServeCompletion {
     }()
 
     /// A word in any of the user's languages.
-    private static func isWord(_ w: String) -> Bool {
+    static func isWord(_ w: String) -> Bool {
         let sc = NSSpellChecker.shared
         return languages.contains { lang in
             sc.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
