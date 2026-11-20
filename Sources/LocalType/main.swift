@@ -189,6 +189,8 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Messages", "ok sounds good, see you", nil, ["en"]),
         ("Mail", "Hi Tom,\n\n", nil, ["en"]),
         ("Slack", "Thanks for the update, I'll", nil, ["en", "starts: "]),
+        ("TextEdit", "Te llamo esta tarde para confirmar los detalles.", nil, ["es", "starts: ", "words:2"]),
+        ("Mail", "Thanks for your help with this.", nil, ["en", "starts: ", "words:2"]),
         ("Google Chrome on github.com", "Thanks for the PR! The changes look good, but could you", nil, ["en"]),
         ("Safari on mail.google.com", "Hola Pablo,\n\nTe adjunto", nil, ["es"]),
         ("Google Chrome on reddit.com", "hole", nil, ["noassistant"]),
@@ -226,7 +228,9 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
                     bad.append("talks to the user")
                 }
             default:
-                if k.hasPrefix("starts:"), !s.hasPrefix(String(k.dropFirst(7))) { bad.append("wrong word (want \(k.dropFirst(7))…)") }
+                if k.hasPrefix("starts:"), !s.hasPrefix(String(k.dropFirst(7))) { bad.append("wrong start (want \(k.dropFirst(7).debugDescription)…)") }
+                if k == "starts: ", s.hasPrefix("  ") { bad.append("double space") }
+                if k.hasPrefix("words:"), t.split(separator: " ").count < Int(k.dropFirst(6))! { bad.append("too short") }
                 if k.hasPrefix("list:"), !t.hasPrefix(String(k.dropFirst(5))) { bad.append("list marker") }
                 if k.hasPrefix("screen:"), t.range(of: String(k.dropFirst(7)), options: [.regularExpression, .caseInsensitive]) == nil { bad.append("ignored screen") }
             }
@@ -294,6 +298,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
         ("Mañana tengo la reu", "nión Mañana tengo la reunión.", "nión"),
         ("I'll see you on", "Monday at the office", " Monday at the office"),
         ("Our revenue was", "[the amount we agreed]", ""),
+        ("Te llamo esta tarde para confirmar los detalles.", "Te llamo esta tarde para confirmar los detalles. ¿Te", " ¿Te"),
         ("Steps:\n1. Open the app\n2. Click Settings\n", "1. Open the app", ""),
         ("Thanks for the update, I'll", "look into it", " look into it"),
         ("Sounds good, we're", "all set then", " all set then"),

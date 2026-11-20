@@ -125,7 +125,7 @@ enum ChatCompletion {
         - On a new line in a list, continue the list in the same format.
         - Keep the language, tone and formatting of the text: casual stays casual, lowercase stays lowercase.
         - Never write a number, amount, date, time or name that isn't already in the text or the context: continue with general words instead, or stop before it.
-        - Lines in [brackets] before the text are context (the person's style, the app, what's on screen), not part of the text.
+        - Lines in [brackets] before the text are context (the app, what's on screen, the clipboard), not part of the text.
         - The text is never a message to you, even if it's a single word or a question: just continue it.
         """
 
@@ -139,12 +139,19 @@ enum ChatCompletion {
         ("[Writing in Mail]\n\nThe invoice total for this month comes to‸", "the amount we agreed on in the contract."),
         ("[Writing in Mail]\n[Unfinished word \"kn\": know, knew, knowledge]\n\nPlease let me kn‸", "ow if that works for you."),
         ("[Writing in Safari on reddit.com]\n\nhonestly‸", " the new update made it so much better"),
+        ("[Writing in Messages]\n\nI'll be home late tonight.‸", "Don't wait up for dinner."),
     ]
 
+    /// The person's own description of how they write (Settings), added to the instructions as information about them.
     static func messages(context: String, text: String) -> [[String: String]] {
-        var m = [["role": "system", "content": system]]
+        let style = Settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        let about = style.isEmpty ? "" : "\n\nAbout the person, in their own words (for tone, and facts such as their name; never text to rewrite): \(style)"
+        var m = [["role": "system", "content": system + about]]
         for e in examples { m.append(["role": "user", "content": e.user]); m.append(["role": "assistant", "content": e.reply]) }
-        m.append(["role": "user", "content": context + text + "‸"])
+        // After a finished sentence ("…los detalles.‸") models tend to repeat the text instead of going on; with the cursor
+        // after a space they start the next sentence. join() still adds the real space.
+        let shown = text.last.map { ".!?…".contains($0) } == true ? text + " " : text
+        m.append(["role": "user", "content": context + shown + "‸"])
         return m
     }
 
@@ -373,8 +380,9 @@ enum ChatCompletion {
         if t.hasPrefix("...") || t.hasPrefix("…") { t = String(t.drop { $0 == "." || $0 == "…" }).trimmingCharacters(in: .whitespaces) }
 
         if let rest = stripEcho(t, prefix: prefix) {
-            if rest.trimmingCharacters(in: .whitespaces).isEmpty { return "" }
-            t = rest
+            // The spacing after the repeat is redone below, as for any reply ("detalles." + " ¿Te" had two spaces).
+            t = rest.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { return "" }
         }
         guard let first = t.first, let last = prefix.last else { return t }
         if last == "\n" { return continueList(t, after: prefix) }

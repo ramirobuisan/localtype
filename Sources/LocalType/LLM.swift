@@ -10,6 +10,9 @@ final class LLM {
         return c
     }())
 
+    /// LT_DEBUG=1 prints each request's context lines and the model's raw reply (development).
+    static let debug = ProcessInfo.processInfo.environment["LT_DEBUG"] != nil
+
     func cancel() {
         task?.cancel(); task = nil
         LlamaEngine.shared.cancel()
@@ -86,11 +89,11 @@ final class LLM {
 
     func complete(prefix: String, appName: String?, screen: String? = nil, completion: @escaping (String?) -> Void) {
         cancel()
-        // Style and context go in as short bracketed lines before the text (the chat prompt explains them; the built-in
-        // engine reads them as-is). Ordered from most to least stable so the engine can reuse its cache across keystrokes.
+        // Context goes in as short bracketed lines before the text (the chat prompt explains them; the built-in engine's
+        // raw mode reads them as-is). Ordered from most to least stable so the engine can reuse its cache across keystrokes.
+        // The person's style is part of the chat instructions (ChatCompletion.messages): as a line before the text,
+        // models took "keep your sentences short" as an order to rewrite the text.
         var header = ""
-        let style = Settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !style.isEmpty { header += "[Style: \(style.replacingOccurrences(of: "\n", with: " "))]\n" }
         if let appName { header += "[Writing in \(appName)]\n" }
         if let screen, !screen.isEmpty { header += "[On screen: \(screen)]\n" }
         if Settings.useClipboard, let clip = NSPasteboard.general.string(forType: .string) {
@@ -105,14 +108,11 @@ final class LLM {
         if Settings.backend == "embedded" {
             let battery = Settings.batteryModelNow.map(GGUFStore.path(for:)).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             guard let path = battery ?? GGUFStore.activePath else { return completion(nil) }
-            let raw = header.isEmpty ? prefix : header + "\n" + prefix
-            let context = chatContext(header, prefix)
-            LlamaEngine.shared.complete(path: path, messages: ChatCompletion.messages(context: context, text: prefix), raw: raw,
-                                        maxTokens: Settings.effectiveMaxTokens) { text, cut, chat in
-                guard let text else { return completion(nil) }
-                // A model without a chat format continued the text itself: nothing to re-join or check.
-                completion(chat ? ChatCompletion.finish(text, cut: cut, context: context, prefix: prefix) : text)
-            }
+            let style = Settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawHeader = (style.isEmpty ? "" : "[Style: \(style.replacingOccurrences(of: "\n", with: " "))]\n") + header
+            let raw = rawHeader.isEmpty ? prefix : rawHeader + "\n" + prefix
+            embedded(path: path, context: chatContext(header, prefix), raw: raw, prefix: prefix, maxTokens: Settings.effectiveMaxTokens,
+                     completion: completion)
             return
         }
         chat(context: chatContext(header, prefix), prefix: prefix, completion: completion)
@@ -125,8 +125,31 @@ final class LLM {
     }
 
     /// MLX-Serve and Ollama: the chat prompt, then the reply re-joined to the text and checked.
-    private func chat(context: String, prefix: String, retry: Bool = true, completion: @escaping (String?) -> Void) {
-        guard let req = ChatCompletion.request(context: context, text: prefix, maxTokens: Settings.effectiveMaxTokens) else {
+    /// The model repeated the text before going on and ran out of room ("…los detalles. ¿Te"): worth one more request
+    /// with room for the repeat. Only the first request (at the normal length) is retried.
+    private static func needsRoom(_ reply: String, cut: Bool, prefix: String, maxTokens: Int) -> Bool {
+        cut && maxTokens == Settings.effectiveMaxTokens && ChatCompletion.stripEcho(reply, prefix: prefix) != nil
+    }
+
+    private func embedded(path: String, context: String, raw: String, prefix: String, maxTokens: Int,
+                          completion: @escaping (String?) -> Void) {
+        LlamaEngine.shared.complete(path: path, messages: ChatCompletion.messages(context: context, text: prefix), raw: raw,
+                                    maxTokens: maxTokens) { [self] text, cut, chat in
+            guard let text else { return completion(nil) }
+            // A model without a chat format continued the text itself: nothing to re-join or check.
+            guard chat else { return completion(text) }
+            if LLM.needsRoom(text, cut: cut, prefix: prefix, maxTokens: maxTokens) {
+                return DispatchQueue.main.async {
+                    self.embedded(path: path, context: context, raw: raw, prefix: prefix, maxTokens: maxTokens * 3, completion: completion)
+                }
+            }
+            completion(ChatCompletion.finish(text, cut: cut, context: context, prefix: prefix))
+        }
+    }
+
+    private func chat(context: String, prefix: String, retry: Bool = true, maxTokens: Int = Settings.effectiveMaxTokens,
+                      completion: @escaping (String?) -> Void) {
+        guard let req = ChatCompletion.request(context: context, text: prefix, maxTokens: maxTokens) else {
             return completion(nil)
         }
         // Strong capture: the retry below must run (and call back) even if the caller let go of this LLM.
@@ -141,7 +164,15 @@ final class LLM {
                 }
                 return completion(nil)
             }
-            completion(ChatCompletion.finish(reply.text, cut: reply.cut, context: context, prefix: prefix))
+            if LLM.needsRoom(reply.text, cut: reply.cut, prefix: prefix, maxTokens: maxTokens) {
+                if LLM.debug { FileHandle.standardError.write(Data("── repeat cut short: \(reply.text.debugDescription), asking again\n".utf8)) }
+                return DispatchQueue.main.async {
+                    self.chat(context: context, prefix: prefix, retry: retry, maxTokens: maxTokens * 3, completion: completion)
+                }
+            }
+            let out = ChatCompletion.finish(reply.text, cut: reply.cut, context: context, prefix: prefix)
+            if LLM.debug { FileHandle.standardError.write(Data("── context\n\(context)── raw \(reply.text.debugDescription) → \(out.debugDescription)\n".utf8)) }
+            completion(out)
         }
         task?.resume()
     }
