@@ -22,9 +22,15 @@ if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--selftest" {
 
 // MLX-Serve check: LocalType --selftest-mlx "text one" "text two" … (uses the configured or a loaded model)
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-mlx" {
-    let texts = Array(CommandLine.arguments.dropFirst(2))
+    // Texts to complete; "-mlxModel <id>" (argument-domain default) picks a model without saving it.
+    var texts: [String] = []
+    var args = Array(CommandLine.arguments.dropFirst(2))
+    while !args.isEmpty {
+        let a = args.removeFirst()
+        if a.hasPrefix("-"), !a.hasPrefix("--"), !args.isEmpty { args.removeFirst() } else { texts.append(a) }
+    }
     let llm = LLM()
-    Settings.backend = "mlxserve"
+    if UserDefaults.standard.string(forKey: "backend") != "mlxserve" { Settings.backend = "mlxserve" }
     func run(_ i: Int) {
         guard i < texts.count else { exit(0) }
         let t0 = Date()

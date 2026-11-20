@@ -153,6 +153,8 @@ enum MLXServeCompletion {
         t = t.trimmingCharacters(in: .whitespaces)
         for q in ["\"", "“", "”", "'", "`"] where t.hasPrefix(q) && !prefix.hasSuffix(q) { t.removeFirst() }
         if let last = t.last, "\"”`".contains(last), !t.dropLast().contains(last) { t.removeLast() }
+        // Template placeholders ("[Your Name]", "[End of letter]") are never what the user would type.
+        if t.hasPrefix("["), t.hasSuffix("]") { return "" }
         if t.hasPrefix("...") || t.hasPrefix("…") { t = String(t.drop { $0 == "." || $0 == "…" }).trimmingCharacters(in: .whitespaces) }
 
         // Echo: the reply starts by repeating the last 2+ words of the text.
@@ -166,6 +168,7 @@ enum MLXServeCompletion {
             }
         }
         guard let first = t.first, let last = prefix.last else { return t }
+        if last == "\n" { return continueList(t, after: prefix) }
         if last.isWhitespace { return t }
         // Punctuation that attaches to the previous word.
         if ".,;:!?)]}…%".contains(first) || first == "'" || first == "’" { return t }
@@ -177,14 +180,46 @@ enum MLXServeCompletion {
         return " " + t
     }
 
+    /// At the start of a line under a list item, small models often drop the marker ("bread" after "- milk").
+    /// Put it back, numbering on from the previous item.
+    private static func continueList(_ reply: String, after prefix: String) -> String {
+        let lines = prefix.dropLast().split(separator: "\n", omittingEmptySubsequences: false)
+        guard let prev = lines.last else { return reply }
+        let indent = String(prev.prefix { $0 == " " || $0 == "\t" })
+        let body = prev.dropFirst(indent.count)
+        var marker: String?
+        for m in ["- ", "* ", "• ", "– "] where body.hasPrefix(m) { marker = m }
+        if marker == nil, let dot = body.firstIndex(where: { $0 == "." || $0 == ")" }),
+           let n = Int(body[..<dot]), body[body.index(after: dot)...].hasPrefix(" ") {
+            marker = "\(n + 1)\(body[dot]) "
+        }
+        guard let marker else { return reply }
+        let markerKind = marker.trimmingCharacters(in: .whitespaces)
+        if reply.hasPrefix(markerKind) || reply.first.map({ "-*•–".contains($0) || $0.isNumber }) == true { return indent + reply }
+        return indent + marker + reply
+    }
+
+    private static let shortWords: Set<String> = [
+        "a", "an", "the", "to", "of", "in", "on", "at", "by", "for", "and", "or", "but", "so", "as", "if", "it", "is",
+        "be", "do", "go", "no", "up", "us", "we", "me", "my", "you", "he", "she", "they", "not", "all", "with",
+        "y", "e", "o", "u", "de", "la", "el", "en", "un", "una", "que", "se", "lo", "le", "mi", "tu", "su", "es", "al", "del", "con", "por",
+    ]
+
     /// True when the reply continues the word the text ends in: that word isn't a word yet ("docum"),
-    /// or it is one but only the joined form makes sense ("the" + "re").
+    /// or the joined form is a normal completion of it ("rem" + "ind") and the reply doesn't simply start
+    /// with a short word of its own ("in" + "to the store").
     private static func finishesWord(_ prefix: String, _ reply: String) -> Bool {
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         let head = String(reply.prefix { $0.isLetter })
         guard !tail.isEmpty, !head.isEmpty else { return false }
         if !isWord(tail) { return true }
-        return isWord(tail + head) && !isWord(head)
+        if shortWords.contains(head.lowercased()) { return false }
+        let joined = tail + head
+        guard isWord(joined) else { return false }
+        if !isWord(head) { return true }
+        let r = NSRange(location: 0, length: (tail as NSString).length)
+        let completions = NSSpellChecker.shared.completions(forPartialWordRange: r, in: tail, language: nil, inSpellDocumentWithTag: 0) ?? []
+        return completions.contains { $0.caseInsensitiveCompare(joined) == .orderedSame }
     }
 
     /// Spell-checker languages matching the user's preferred languages (e.g. English and Spanish).

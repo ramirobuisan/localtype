@@ -20,7 +20,7 @@ Requires macOS 14+, Apple Silicon, Swift 5.9+ (Command Line Tools are enough).
 open LocalType.app
 ```
 
-On first launch a setup window walks through **Accessibility** permission (required), the model, and the optional extras (screen context needs **Screen Recording**). With MLX-Serve running, LocalType picks a loaded chat model automatically; smaller models answer faster. Without it, open *Models…* and download a GGUF (e.g. Qwen2.5 3B).
+On first launch a setup window walks through **Accessibility** permission (required), the model, and the optional extras (screen context needs **Screen Recording**). With MLX-Serve running, LocalType picks a loaded chat model automatically; pick a small one for speed. Measured on an M5 Max: `mlx-community/gemma-4-e4b-it-4bit` (5.2 GB) answers in ~30–130 ms (recommended: best phrasing, uses your name from the style instructions), `mlx-community/Qwen3.5-4B-MLX-4bit` (3.1 GB) is as fast but rougher, a dense 31B model takes ~1–1.5 s. Add one with `mlx-serve pull <id>` and `curl -X POST http://127.0.0.1:11234/v1/models/rescan`. Without it, open *Models…* and download a GGUF (e.g. Qwen2.5 3B).
 
 Self-tests: `--selftest model.gguf "text"` (built-in engine), `--selftest-mlx "text"` (MLX-Serve), `--selftest-emoji ":fir"`, `--selftest-screen <pid>`.
 
