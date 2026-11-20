@@ -109,9 +109,9 @@ final class MLXServeStore: ModelStore {
     func delete(_ name: String, _ done: @escaping (Bool) -> Void) { done(false) }
 }
 
-/// Completion through MLX-Serve's chat endpoint. Instruct models degenerate on raw continuation
-/// ("la la la…"), but follow a short "continue this text" instruction well.
-enum MLXServeCompletion {
+/// Completion through a chat endpoint: MLX-Serve's OpenAI-style one or Ollama's /api/chat. Instruct models
+/// degenerate on raw continuation ("la la la…"), but follow a short "continue this text" instruction well.
+enum ChatCompletion {
     /// Chosen by scoring variants on a 22-case set (English/Spanish, mail, chat, lists, half-typed words, sign-offs,
     /// replies with screen context, invented-number traps) against gemma-4-E4B: this one plus the examples below
     /// passed 21/22 versus 16/20 for the previous prompt, at the same speed (the fixed part is prefix-cached).
@@ -146,22 +146,29 @@ enum MLXServeCompletion {
         return m
     }
 
+    /// Set when Ollama refuses the `think` switch (older versions or models without thinking); later requests leave it out.
+    static var ollamaRejectsThink = false
+
     static func request(context: String, text: String, maxTokens: Int) -> URLRequest? {
-        let model = Settings.batteryModelNow ?? Settings.mlxModel
-        guard let u = URL(string: Settings.mlxEndpoint + "/v1/chat/completions"), !model.isEmpty else { return nil }
+        let ollama = Settings.backend == "ollama"
+        let model = Settings.batteryModelNow ?? (ollama ? Settings.model : Settings.mlxModel)
+        let endpoint = ollama ? Settings.endpoint + "/api/chat" : Settings.mlxEndpoint + "/v1/chat/completions"
+        guard let u = URL(string: endpoint), !model.isEmpty else { return nil }
         var r = URLRequest(url: u)
         r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "model": model,
-            "messages": messages(context: context, text: text),
-            "max_tokens": maxTokens,
-            "temperature": 0.2,
-            "top_p": 0.9,
-            "stream": false,
-            "stop": ["\n"],
-            "chat_template_kwargs": ["enable_thinking": false],
-        ]
+        var body: [String: Any] = ["model": model, "messages": messages(context: context, text: text), "stream": false]
+        if ollama {
+            body["keep_alive"] = "30m"
+            body["options"] = ["num_predict": maxTokens, "temperature": 0.2, "top_p": 0.9, "stop": ["\n"]]
+            if !ollamaRejectsThink { body["think"] = false }
+        } else {
+            body["max_tokens"] = maxTokens
+            body["temperature"] = 0.2
+            body["top_p"] = 0.9
+            body["stop"] = ["\n"]
+            body["chat_template_kwargs"] = ["enable_thinking": false]
+        }
         r.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return r
     }
@@ -198,11 +205,15 @@ enum MLXServeCompletion {
 
     /// The reply text, and whether it was cut off by the token limit.
     static func parse(_ data: Data) -> (text: String, cut: Bool)? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choice = (obj["choices"] as? [[String: Any]])?.first,
-              let msg = (choice["message"] as? [String: Any])?["content"] as? String
-        else { return nil }
-        return (msg, choice["finish_reason"] as? String == "length")
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let choice = (obj["choices"] as? [[String: Any]])?.first,           // OpenAI style (MLX-Serve)
+           let msg = (choice["message"] as? [String: Any])?["content"] as? String {
+            return (msg, choice["finish_reason"] as? String == "length")
+        }
+        if let msg = (obj["message"] as? [String: Any])?["content"] as? String {  // Ollama
+            return (msg, obj["done_reason"] as? String == "length")
+        }
+        return nil
     }
 
     /// Chat models reply as a separate message, so they drop the joining space, sometimes echo the end of

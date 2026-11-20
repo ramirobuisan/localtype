@@ -18,7 +18,8 @@ final class Controller {
     /// Set while an emoji suggestion is showing: matches, the selected one, and how many characters ":query" spans.
     private var emoji: (items: [Emoji.Item], index: Int, delete: Int, caret: NSRect)?
     private var lastError: Bool = false
-    var onStatus: ((String) -> Void)?
+    /// A suggestion failed (the problem), or works again after failing (nil).
+    var onStatus: ((String?) -> Void)?
 
     // MARK: Event tap
 
@@ -243,7 +244,7 @@ final class Controller {
         }
         generation += 1
         let gen = generation
-        llm.complete(prefix: ctx.prefix, appName: ctx.appName, screen: screen) { [weak self] raw in
+        llm.complete(prefix: ctx.prefix, appName: ctx.place, screen: screen) { [weak self] raw in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
                 guard let raw else {
@@ -253,7 +254,7 @@ final class Controller {
                     }
                     return
                 }
-                if self.lastError { self.lastError = false; self.onStatus?("Ready") }
+                if self.lastError { self.lastError = false; self.onStatus?(nil) }
                 var text = Controller.clean(raw, prefix: ctx.prefix)
                 if Settings.currentWordOnly { text = Controller.restOfWord(text, after: ctx.prefix) }
                 guard !text.isEmpty else { return }
@@ -327,12 +328,12 @@ final class Controller {
     private func showAlternatives() {
         guard LLM.supportsLists, let current = suggestion, emoji == nil, fixDelete == nil, let ctx = AX.readContext() else { return }
         let system = Controller.alternativesPrompt
-        let user = "[Writing in \(ctx.appName ?? "an app")]\n\n" + ctx.prefix + "‸"
+        let user = "[Writing in \(ctx.place ?? "an app")]\n\n" + ctx.prefix + "‸"
         choiceKind = .alternatives
         listLLM.list(system: system, user: user, count: 5) { [weak self] items in
             DispatchQueue.main.async {
                 guard let self, self.suggestion == current, case .alternatives? = self.choiceKind else { return }
-                let options = items.map { MLXServeCompletion.join(Controller.continuingCase($0, after: ctx.prefix), after: ctx.prefix) }
+                let options = items.map { ChatCompletion.join(Controller.continuingCase($0, after: ctx.prefix), after: ctx.prefix) }
                     .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 guard !options.isEmpty else { return }
                 self.choices.show(options, heading: "Other words", below: ctx.caretRect)

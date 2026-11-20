@@ -61,10 +61,10 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-fie
     print("prefix: …\(ctx.prefix.suffix(50).debugDescription) (\(ctx.prefix.count) chars)")
     print("caret: \(ctx.caretRect) line height \(ctx.lineHeight)")
     print("font: \(ctx.style.map { "\($0.font.fontName) \($0.font.pointSize)" } ?? "unknown (system font fallback)")")
-    print("domain: \(ctx.domain ?? "none")")
+    print("domain: \(ctx.domain ?? "none") · prompt place: \(ctx.place ?? "none")")
     let t0 = Date()
     MLXServeStore.shared.prepare { _ in
-        LLM().complete(prefix: ctx.prefix, appName: ctx.appName) { out in
+        LLM().complete(prefix: ctx.prefix, appName: ctx.place) { out in
             print("suggestion [\(Int(Date().timeIntervalSince(t0) * 1000)) ms]: \(out.map { $0.debugDescription } ?? "nil")")
             exit(0)
         }
@@ -118,7 +118,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-lab
     MLXServeStore.shared.prepare { _ in
         let prefix = "Thanks for the update. I think we should"
         llm.list(system: Controller.alternativesPrompt, user: "[Writing in Mail]\n\n" + prefix + "‸", count: 5) { alts in
-            print("alternatives after \"\(prefix)\": " + alts.map { MLXServeCompletion.join(Controller.continuingCase($0, after: prefix), after: prefix).debugDescription }.joined(separator: ", "))
+            print("alternatives after \"\(prefix)\": " + alts.map { ChatCompletion.join(Controller.continuingCase($0, after: prefix), after: prefix).debugDescription }.joined(separator: ", "))
             print("case: \(Controller.continuingCase("Moving forward", after: "we should")) / \(Controller.continuingCase("I agree", after: "and")) / \(Controller.continuingCase("Laura said", after: "and")) / \(Controller.continuingCase("Great idea", after: "Done."))")
             let user = "Passage: …The results were «good», but the second test took much longer than expected.…\n\nReplace: good"
             llm.list(system: Controller.synonymsPrompt, user: user, count: 5) { syns in
@@ -155,7 +155,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pra
     guard let ctx = AX.ownContext(tv) else { print("practice context: nil"); exit(1) }
     print("practice context in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: prefix \(ctx.prefix.debugDescription), caret \(ctx.caretRect), font \(ctx.style?.font.pointSize ?? 0), isPractice \(ctx.isPractice)")
     MLXServeStore.shared.prepare { _ in
-        LLM().complete(prefix: ctx.prefix, appName: ctx.appName) { out in print("suggestion: \(out.map { $0.debugDescription } ?? "nil")"); exit(0) }
+        LLM().complete(prefix: ctx.prefix, appName: ctx.place) { out in print("suggestion: \(out.map { $0.debugDescription } ?? "nil")"); exit(0) }
     }
     RunLoop.main.run()
 }
@@ -188,6 +188,8 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Mail", "Thanks for the update. ", nil, ["en"]),
         ("Messages", "ok sounds good, see you", nil, ["en"]),
         ("Mail", "Hi Tom,\n\n", nil, ["en"]),
+        ("Google Chrome on github.com", "Thanks for the PR! The changes look good, but could you", nil, ["en"]),
+        ("Safari on mail.google.com", "Hola Pablo,\n\nTe adjunto", nil, ["es"]),
     ]
     let style = Settings.instructions
     let name = style.range(of: #"(?i)my name is ([A-ZÁÉÍÓÚÑ][\p{L}]+)"#, options: .regularExpression)

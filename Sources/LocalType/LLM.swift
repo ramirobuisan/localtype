@@ -1,6 +1,7 @@
 import AppKit
 
-/// Talks to a local Ollama server. Raw mode = plain text continuation, no chat template.
+/// Gets suggestions from the chosen engine: MLX-Serve or Ollama through their chat endpoints (see ChatCompletion),
+/// or the built-in llama.cpp engine, which continues the text directly.
 final class LLM {
     private var task: URLSessionDataTask?
     private let session = URLSession(configuration: {
@@ -19,7 +20,7 @@ final class LLM {
     static func warmUp() {
         switch Settings.backend {
         case "mlxserve":
-            if let r = MLXServeCompletion.request(context: "", text: "Hi", maxTokens: 1) { URLSession.shared.dataTask(with: r).resume() }
+            if let r = ChatCompletion.request(context: "", text: "Hi", maxTokens: 1) { URLSession.shared.dataTask(with: r).resume() }
         case "ollama":
             guard let u = URL(string: Settings.endpoint + "/api/generate") else { return }
             var r = URLRequest(url: u); r.httpMethod = "POST"
@@ -85,8 +86,8 @@ final class LLM {
 
     func complete(prefix: String, appName: String?, screen: String? = nil, completion: @escaping (String?) -> Void) {
         cancel()
-        // Raw mode has no system prompt, so style/context goes in as a short bracketed header.
-        // Ordered from most to least stable so the engine can reuse its KV cache across keystrokes.
+        // Style and context go in as short bracketed lines before the text (the chat prompt explains them; the built-in
+        // engine reads them as-is). Ordered from most to least stable so the engine can reuse its cache across keystrokes.
         var header = ""
         let style = Settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if !style.isEmpty { header += "[Style: \(style.replacingOccurrences(of: "\n", with: " "))]\n" }
@@ -103,20 +104,6 @@ final class LLM {
         }
         if !header.isEmpty { header += "\n" }
 
-        if Settings.backend == "mlxserve" {
-            guard let req = MLXServeCompletion.request(context: header, text: prefix, maxTokens: Settings.effectiveMaxTokens) else {
-                return completion(nil)
-            }
-            task = session.dataTask(with: req) { data, _, error in
-                guard error == nil, let data, let reply = MLXServeCompletion.parse(data) else { return completion(nil) }
-                let joined = MLXServeCompletion.join(reply.text, after: prefix, cut: reply.cut)
-                let checked = MLXServeCompletion.dropInventedFigures(joined, context: header + prefix)
-                completion(MLXServeCompletion.dropLanguageSwitch(checked, prefix: prefix))
-            }
-            task?.resume()
-            return
-        }
-
         if Settings.backend == "embedded" {
             let battery = Settings.batteryModelNow.map(GGUFStore.path(for:)).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             guard let path = battery ?? GGUFStore.activePath else { return completion(nil) }
@@ -124,29 +111,29 @@ final class LLM {
             return
         }
 
-        guard let url = URL(string: Settings.endpoint + "/api/generate") else { return completion(nil) }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "model": Settings.batteryModelNow ?? Settings.model,
-            "prompt": header + prefix,
-            "raw": true,
-            "stream": false,
-            "keep_alive": "30m",
-            "options": [
-                "num_predict": Settings.effectiveMaxTokens,
-                "temperature": 0.2,
-                "top_p": 0.9,
-                "stop": ["\n", "\r"],
-            ],
-        ]
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        task = session.dataTask(with: req) { data, _, error in
-            guard error == nil, let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = obj["response"] as? String else { return completion(nil) }
-            completion(text)
+        chat(context: header, prefix: prefix, completion: completion)
+    }
+
+    /// MLX-Serve and Ollama: the chat prompt, then the reply re-joined to the text and checked.
+    private func chat(context: String, prefix: String, retry: Bool = true, completion: @escaping (String?) -> Void) {
+        guard let req = ChatCompletion.request(context: context, text: prefix, maxTokens: Settings.effectiveMaxTokens) else {
+            return completion(nil)
+        }
+        // Strong capture: the retry below must run (and call back) even if the caller let go of this LLM.
+        task = session.dataTask(with: req) { [self] data, _, error in
+            guard error == nil, let data else { return completion(nil) }
+            guard let reply = ChatCompletion.parse(data) else {
+                // Older Ollama versions and some models refuse the "don't think" switch: ask once more without it.
+                if retry, Settings.backend == "ollama", !ChatCompletion.ollamaRejectsThink,
+                   String(decoding: data, as: UTF8.self).localizedCaseInsensitiveContains("think") {
+                    ChatCompletion.ollamaRejectsThink = true
+                    return DispatchQueue.main.async { self.chat(context: context, prefix: prefix, retry: false, completion: completion) }
+                }
+                return completion(nil)
+            }
+            let joined = ChatCompletion.join(reply.text, after: prefix, cut: reply.cut)
+            let checked = ChatCompletion.dropInventedFigures(joined, context: context + prefix)
+            completion(ChatCompletion.dropLanguageSwitch(checked, prefix: prefix))
         }
         task?.resume()
     }

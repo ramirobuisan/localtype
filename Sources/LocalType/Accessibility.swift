@@ -26,6 +26,17 @@ struct FieldContext {
     /// The "Try it" box in LocalType's own Setup window (read directly, never recorded).
     var isPractice = false
 
+    /// Where the person is writing, for the prompt: the app, plus the website when it's a web page
+    /// ("Google Chrome on github.com"). Web-based apps that are the site itself (Discord) stay just the app.
+    var place: String? {
+        guard let domain else { return appName }
+        guard let app = appName else { return domain }
+        let labels = domain.split(separator: ".")
+        let site = labels.count >= 2 ? labels[labels.count - 2] : labels.first ?? ""
+        // Exact match only: "Google Chrome" on docs.google.com must keep the site.
+        return app.lowercased().replacingOccurrences(of: " ", with: "") == site ? app : "\(app) on \(domain)"
+    }
+
     /// Caret position in global top-left coordinates (the space Accessibility and screen capture use).
     var caretPoint: CGPoint {
         let primaryH = NSScreen.screens.first?.frame.height ?? 0

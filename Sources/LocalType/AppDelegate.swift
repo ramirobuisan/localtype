@@ -48,7 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         AccessoryButton.shared.update()
         ModelsWindow.shared.onChange = { [weak self] in self?.checkModelStatusOnly() }
-        Controller.shared.onStatus = { [weak self] s in self?.setStatus(s, ok: s == "Ready") }
+        // A suggestion failed (problem) or works again (nil, after a failure).
+        Controller.shared.onStatus = { [weak self] problem in
+            guard let self else { return }
+            if let problem { self.setStatus(problem, ok: false, fix: ("Reconnect", #selector(self.reconnect))) } else { self.checkModelStatusOnly() }
+        }
         let firstRun = !Settings.onboardingDone || CommandLine.arguments.contains("--setup")
         Sync.update()
         // After sleep the model may have been unloaded: warm it up before the first suggestion.
@@ -59,6 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ScreenContext.shared.prewarm()
         Updates.checkInBackgroundIfDue { [weak self] in self?.refreshUpdateItem() }
         if firstRun { OnboardingWindow.shared.show() }
+        // Development: --open-menu <seconds> opens the menu-bar menu after a delay, for screenshots.
+        if let i = CommandLine.arguments.firstIndex(of: "--open-menu"), i + 1 < CommandLine.arguments.count,
+           let delay = Double(CommandLine.arguments[i + 1]) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.item.button?.performClick(nil) }
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--settings") {
             let args = CommandLine.arguments
             SettingsWindow.shared.show(page: i + 1 < args.count ? args[i + 1] : "General")
@@ -72,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             checkModel()
             return
         }
-        setStatus("Grant Accessibility access…", ok: false)
+        setStatus("Needs Accessibility access", ok: false, fix: ("Open Setup…", #selector(openSetup)))
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
             if AX.trusted(prompt: false), Controller.shared.start() {
                 t.invalidate()
@@ -156,7 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.list { [weak self] list in
             let have = list?.contains { store.isActive($0.name) } ?? false
             let name = store.activeName
-            self?.setStatus(have ? "Ready · \(name.split(separator: "/").last.map(String.init) ?? name)" : "No model selected — open Models…", ok: have)
+            if have { self?.setStatus("Ready · \(name.split(separator: "/").last.map(String.init) ?? name)", ok: true) }
+            else { self?.setStatus("No model selected", ok: false, fix: ("Choose…", #selector(AppDelegate.openModels))) }
         }
     }
 
@@ -167,7 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Settings.backend == "mlxserve" {
             setStatus("Connecting to MLX-Serve…", ok: nil)
             MLXServeStore.shared.prepare { [weak self] problem in
-                if let problem { self?.setStatus(problem, ok: false); return }
+                if let problem {
+                    // First sentence only: the button replaces "Open it and try again".
+                    let short = problem.components(separatedBy: ". ").first.map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 } ?? problem
+                    self?.setStatus(short, ok: false, fix: ("Try Again", #selector(AppDelegate.reconnect)))
+                    return
+                }
                 MLXServeStore.shared.autoSelect { self?.checkModelStatusOnly(); LLM.warmUp() }
             }
             return
@@ -187,7 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ModelManager.shared.ensureServer { [weak self] up in
             guard let self else { return }
             guard up else {
-                self.setStatus(ModelManager.ollamaBinary == nil ? "Ollama not installed" : "Ollama unreachable", ok: false)
+                if ModelManager.ollamaBinary == nil { self.setStatus("Ollama not installed", ok: false) }
+                else { self.setStatus("Ollama unreachable", ok: false, fix: ("Try Again", #selector(self.reconnect))) }
                 return
             }
             ModelManager.shared.list { list in
@@ -201,13 +217,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openSetup() { OnboardingWindow.shared.show() }
 
     /// Status line at the top of the menu: a colored dot (green ready, orange needs attention, gray working) and text.
-    private func setStatus(_ text: String, ok: Bool?) {
+    /// When something needs fixing, `fix` is what clicking the line does, named after the text in the accent color.
+    private func setStatus(_ text: String, ok: Bool?, fix: (title: String, action: Selector)? = nil) {
         let color: NSColor = ok == true ? .systemGreen : ok == false ? .systemOrange : .systemGray
         let s = NSMutableAttributedString(string: "● ", attributes: [.foregroundColor: color, .font: NSFont.menuFont(ofSize: 11)])
         s.append(NSAttributedString(string: text, attributes: [.foregroundColor: NSColor.secondaryLabelColor,
                                                                .font: NSFont.menuFont(ofSize: 0)]))
+        if let fix {
+            s.append(NSAttributedString(string: " — \(fix.title)", attributes: [.foregroundColor: NSColor.controlAccentColor,
+                                                                                .font: NSFont.menuFont(ofSize: 0)]))
+        }
         statusLine.attributedTitle = s
+        statusLine.target = fix == nil ? nil : self
+        statusLine.action = fix?.action
     }
+
+    /// Reconnects to the engine: reopens MLX-Serve or starts Ollama if needed, then warms the model up.
+    @objc private func reconnect() { checkModel() }
 
     private func refreshUpdateItem() {
         update.isHidden = Updates.available == nil
