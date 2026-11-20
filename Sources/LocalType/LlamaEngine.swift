@@ -7,6 +7,8 @@ final class LlamaEngine {
     static let shared = LlamaEngine()
 
     private let queue = DispatchQueue(label: "localtype.llama", qos: .userInitiated)
+    private let onQueue = DispatchSpecificKey<Bool>()
+    private init() { queue.setSpecific(key: onQueue, value: true) }
     private let lock = NSLock()
     private var latest = 0
 
@@ -17,8 +19,10 @@ final class LlamaEngine {
     private var cached: [llama_token] = []
     private var backendReady = false
 
-    private static let nCtx: UInt32 = 2048
-    private static let maxPromptTokens = 1400
+    // Room for the chat prompt (instructions and examples, ~700 tokens) plus context lines and 1,500 characters of text.
+    private static var exitHookSet = false
+    private static let nCtx: UInt32 = 4096
+    private static let maxPromptTokens = 3500
 
     private func bump() -> Int { lock.lock(); defer { lock.unlock() }; latest += 1; return latest }
     private func isCurrent(_ g: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return g == latest }
@@ -35,12 +39,14 @@ final class LlamaEngine {
     }
 
     /// Frees Metal resources synchronously; must run before process exit or ggml aborts in its static destructors.
+    /// Safe to call more than once and from the engine's own queue (an exit inside a completion callback).
     func shutdown() {
         _ = bump()
-        queue.sync {
+        let work = {
             self.freeModel()
             if self.backendReady { llama_backend_free(); self.backendReady = false }
         }
+        if DispatchQueue.getSpecific(key: onQueue) == true { work() } else { queue.sync(execute: work) }
     }
 
     func complete(path: String, prompt: String, maxTokens: Int, completion: @escaping (String?) -> Void) {
@@ -48,8 +54,43 @@ final class LlamaEngine {
         queue.async {
             guard self.isCurrent(gen) else { return completion(nil) }
             guard self.ensureLoaded(path) else { return completion(nil) }
-            completion(self.generate(prompt: prompt, maxTokens: maxTokens, gen: gen))
+            completion(self.generate(prompt: prompt, special: false, maxTokens: maxTokens, gen: gen)?.text)
         }
+    }
+
+    /// Chat models get `messages` in the model's own chat format (the template stored in the model file), like
+    /// MLX-Serve and Ollama do; models without one (base models) get `raw`, plain text to continue. Calls back with
+    /// the reply, whether the token limit cut it, and whether the chat format was used.
+    func complete(path: String, messages: [[String: String]], raw: String, maxTokens: Int,
+                  completion: @escaping (_ text: String?, _ cut: Bool, _ chat: Bool) -> Void) {
+        let gen = bump()
+        queue.async {
+            guard self.isCurrent(gen), self.ensureLoaded(path) else { return completion(nil, false, false) }
+            if let prompt = self.chatPrompt(messages) {
+                let r = self.generate(prompt: prompt, special: true, maxTokens: maxTokens, gen: gen)
+                completion(r?.text, r?.cut ?? false, true)
+            } else {
+                let r = self.generate(prompt: raw, special: false, maxTokens: maxTokens, gen: gen)
+                completion(r?.text, r?.cut ?? false, false)
+            }
+        }
+    }
+
+    /// The conversation in the model's chat format, ending where the assistant's reply starts; nil without a template.
+    private func chatPrompt(_ messages: [[String: String]]) -> String? {
+        guard let model, let tmpl = llama_model_chat_template(model, nil) else { return nil }
+        let roles = messages.map { strdup($0["role"] ?? "user") }
+        let contents = messages.map { strdup($0["content"] ?? "") }
+        defer { (roles + contents).forEach { free($0) } }
+        var chat = zip(roles, contents).map { llama_chat_message(role: $0, content: $1) }
+        var buf = [CChar](repeating: 0, count: 16384)
+        var n = llama_chat_apply_template(tmpl, &chat, chat.count, true, &buf, Int32(buf.count))
+        if n > Int32(buf.count) {
+            buf = [CChar](repeating: 0, count: Int(n) + 1)
+            n = llama_chat_apply_template(tmpl, &chat, chat.count, true, &buf, Int32(buf.count))
+        }
+        guard n > 0 else { return nil }
+        return String(decoding: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
     // MARK: Internals (queue-confined)
@@ -79,17 +120,24 @@ final class LlamaEngine {
         cp.n_threads_batch = threads
         guard let c = llama_init_from_model(m, cp) else { llama_model_free(m); return false }
         model = m; ctx = c; vocab = llama_model_get_vocab(m); loadedPath = path; cached = []
+        // Free the GPU resources on any exit, before ggml's own cleanup (registered while loading, so it runs after
+        // this): it aborts if they're still held. Quitting the app frees them earlier; this covers direct exits.
+        if !LlamaEngine.exitHookSet {
+            LlamaEngine.exitHookSet = true
+            atexit { LlamaEngine.shared.shutdown() }
+        }
         return true
     }
 
-    private func tokenize(_ text: String) -> [llama_token] {
+    /// `special`: read the chat format's markers (<|im_start|> …) as the model's control tokens, not as text.
+    private func tokenize(_ text: String, special: Bool) -> [llama_token] {
         guard let vocab else { return [] }
         let utf8 = Array(text.utf8)
         var out = [llama_token](repeating: 0, count: utf8.count + 8)
-        var n = llama_tokenize(vocab, text, Int32(utf8.count), &out, Int32(out.count), true, false)
+        var n = llama_tokenize(vocab, text, Int32(utf8.count), &out, Int32(out.count), true, special)
         if n < 0 {
             out = [llama_token](repeating: 0, count: Int(-n))
-            n = llama_tokenize(vocab, text, Int32(utf8.count), &out, Int32(out.count), true, false)
+            n = llama_tokenize(vocab, text, Int32(utf8.count), &out, Int32(out.count), true, special)
         }
         return n > 0 ? Array(out.prefix(Int(n))) : []
     }
@@ -113,11 +161,13 @@ final class LlamaEngine {
         cached = []
     }
 
-    private func generate(prompt: String, maxTokens: Int, gen: Int) -> String? {
+    private func generate(prompt: String, special: Bool, maxTokens: Int, gen: Int) -> (text: String, cut: Bool)? {
         guard let ctx, let vocab else { return nil }
-        var tokens = tokenize(prompt)
+        var tokens = tokenize(prompt, special: special)
         guard !tokens.isEmpty else { return nil }
         if tokens.count > LlamaEngine.maxPromptTokens {
+            // Raw text can lose its start; a chat prompt can't (its instructions are at the start).
+            guard !special else { return nil }
             tokens = Array(tokens.suffix(LlamaEngine.maxPromptTokens))
         }
 
@@ -144,13 +194,14 @@ final class LlamaEngine {
 
         var bytes: [UInt8] = []
         var buf = [CChar](repeating: 0, count: 128)
+        var cut = true
         for _ in 0..<maxTokens {
             guard isCurrent(gen) else { return nil }
             let id = llama_sampler_sample(smpl, ctx, -1)
-            if llama_vocab_is_eog(vocab, id) { break }
+            if llama_vocab_is_eog(vocab, id) { cut = false; break }
             let n = llama_token_to_piece(vocab, id, &buf, Int32(buf.count), 0, false)
             if n > 0 { bytes.append(contentsOf: buf[0..<Int(n)].map { UInt8(bitPattern: $0) }) }
-            if bytes.contains(10) || bytes.contains(13) { break }
+            if bytes.contains(10) || bytes.contains(13) { cut = false; break }
             var one = [id]
             let rc = one.withUnsafeMutableBufferPointer { b in
                 llama_decode(ctx, llama_batch_get_one(b.baseAddress, 1))
@@ -160,6 +211,6 @@ final class LlamaEngine {
         var s = String(decoding: bytes, as: UTF8.self)
         while s.last == "\u{FFFD}" { s.removeLast() }   // cut mid-character by the token limit
         if let nl = s.firstIndex(where: { $0 == "\n" || $0 == "\r" }) { s = String(s[..<nl]) }
-        return s
+        return (s, cut)
     }
 }

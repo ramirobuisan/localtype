@@ -175,6 +175,83 @@ enum ChatCompletion {
         return r
     }
 
+    /// A chat model's reply turned into the suggestion: re-joined to the text, then the checks for made-up figures,
+    /// a switch of language and replies that talk to the person.
+    static func finish(_ reply: String, cut: Bool, context: String, prefix: String) -> String {
+        var s = join(reply, after: prefix, cut: cut)
+        s = cutRunOn(cutAtBracket(s, prefix: prefix), prefix: prefix)
+        s = dropRepeats(s, prefix: prefix)
+        s = dropInventedFigures(s, context: context + prefix)
+        return dropAssistantReply(dropLanguageSwitch(s, prefix: prefix), prefix: prefix)
+    }
+
+    /// The reply starts by repeating the end of the text, maybe from its start and with other punctuation ("¡Nos
+    /// vemos mañana en la universidad!" after "Nos vemos mañana en la universi"). Returns what follows the repeated
+    /// part (for a half-typed last word, from inside that word: "dad!"), or nil when there's no repeat.
+    static func stripEcho(_ reply: String, prefix: String) -> String? {
+        func norm(_ w: Substring) -> String { w.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let pw = prefix.split(whereSeparator: \.isWhitespace).map(norm).filter { !$0.isEmpty }
+        let rw = reply.split(whereSeparator: \.isWhitespace)
+        let midWord = prefix.last?.isLetter == true
+        for k in stride(from: min(8, pw.count, rw.count), through: 2, by: -1) {
+            let tail = Array(pw.suffix(k))
+            guard zip(rw.prefix(k - 1), tail.dropLast()).allSatisfy({ norm($0) == $1 }) else { continue }
+            let word = rw[k - 1], last = tail[k - 1]
+            if norm(word) == last {
+                return String(reply[word.endIndex...])
+            }
+            // The half-typed word, finished inside the repeat: keep the rest of that word.
+            if midWord, norm(word).hasPrefix(last), let start = word.firstIndex(where: { $0.isLetter || $0.isNumber }) {
+                var i = start, matched = 0
+                while i < word.endIndex, matched < last.count {
+                    if word[i].isLetter || word[i].isNumber { matched += 1 }
+                    i = word.index(after: i)
+                }
+                return String(reply[i...])
+            }
+        }
+        return nil
+    }
+
+    /// Square brackets the text doesn't use are the model's (made-up context lines, "[the amount]"): cut there.
+    static func cutAtBracket(_ s: String, prefix: String) -> String {
+        guard !prefix.contains("["), let b = s.firstIndex(of: "[") else { return s }
+        let kept = String(s[..<b])
+        return kept.trimmingCharacters(in: .whitespaces).isEmpty ? "" : String(kept.reversed().drop { $0 == " " }.reversed())
+    }
+
+    /// Cuts where the model runs on into a new sentence without punctuation, often a reply to the text ("repl" +
+    /// "y You're welcome!", "reu" + "nión Mañana tengo…"): a capitalised common word right after a lowercase letter.
+    /// Names aren't common words in lowercase ("Laura", "Madrid"); "I", all-caps words, months and days are exempt.
+    static func cutRunOn(_ s: String, prefix: String) -> String {
+        let exempt: Set<String> = ["i", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+                                   "february", "march", "april", "may", "june", "july", "august", "september", "october",
+                                   "november", "december"]
+        let chars = Array(s)
+        for i in chars.indices where chars[i] == " " && i + 1 < chars.count && chars[i + 1].isUppercase {
+            guard let before = i > 0 ? chars[i - 1] : prefix.last, before.isLetter, before.isLowercase else { continue }
+            var j = i + 1
+            while j < chars.count, chars[j].isLetter || chars[j] == "'" || chars[j] == "’" { j += 1 }
+            let word = String(chars[(i + 1)..<j])
+            let base = word.lowercased().split(whereSeparator: { $0 == "'" || $0 == "’" }).first.map(String.init) ?? ""
+            guard word != word.uppercased(), !exempt.contains(base), Spelling.isCommonWord(word.lowercased(), in: prefix) else { continue }
+            let kept = String(chars[..<i])
+            return kept.trimmingCharacters(in: .whitespaces).isEmpty ? "" : kept
+        }
+        return s
+    }
+
+    /// A suggestion of three or more words that's already in the text ("Steps: 1. Open the app…" + "1. Open the app").
+    static func dropRepeats(_ s: String, prefix: String) -> String {
+        func norm(_ x: String) -> String {
+            String(x.lowercased().map { $0.isWhitespace ? " " : $0 }.filter { $0.isLetter || $0.isNumber || $0 == " " })
+                .split(separator: " ").joined(separator: " ")
+        }
+        let t = norm(s)
+        guard t.split(separator: " ").count >= 3 else { return s }
+        return norm(prefix).contains(t) ? "" : s
+    }
+
     /// When the text ends in the middle of a word, a context line with the words it may become, from the dictionary
     /// in the text's language ("tar" → tarde, tarjeta, tarta…). Small models finish half-words badly on their own
     /// ("esta tar" → "che", "a contarte"); with the options listed they pick the one that fits.
@@ -197,6 +274,8 @@ enum ChatCompletion {
         guard let last = prefix.last, last.isLetter else { return nil }
         let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
         guard tail.count >= 2 else { return nil }
+        // The end of a contraction ("I'll", "we're"), not a word of its own: "ll" isn't the start of "llama".
+        if let before = prefix.dropLast(tail.count).last, before == "'" || before == "’" { return nil }
         if tail.first?.isUppercase == true { return Spelling.isWord(tail) ? nil : tail }   // a name in any language
         if !Spelling.isWord(tail, in: prefix) { return tail }
         return Spelling.isCommonWord(tail, in: prefix) ? nil : tail
@@ -226,7 +305,7 @@ enum ChatCompletion {
     /// Replies where the model talks to the person instead of continuing their text ("I'm not sure what you mean
     /// by 'hole'", "Could you provide more context?"). Short texts invite this; drop them.
     static func dropAssistantReply(_ suggestion: String, prefix: String) -> String {
-        let meta = #"(?i)(what (you|do you) mean by|could you (please )?(clarify|provide)|provide more (context|details|information)|as an ai\b|language model|i'm not sure what you|qu[eé] quieres decir con|a qu[eé] te refieres|m[aá]s contexto|no estoy segur[oa] de (qu[eé]|lo que)|como (una )?ia\b|modelo de lenguaje)"#
+        let meta = #"(?i)(what (you|do you) mean by|could you (please )?(clarify|provide)|provide more (context|details|information)|as an ai\b|language model|i'm not sure what you|you'?re welcome|i'?m sorry to hear|sorry to hear that|i (don'?t|do not) understand|i'?m here to help|no entiendo|estoy aqu[ií] para ayudar|qu[eé] quieres decir con|a qu[eé] te refieres|m[aá]s contexto|no estoy segur[oa] de (qu[eé]|lo que)|como (una )?ia\b|modelo de lenguaje)"#
         guard suggestion.range(of: meta, options: .regularExpression) != nil else { return suggestion }
         // A longer text that itself is a conversation reply may legitimately say this; a few words never do.
         let quotesText = prefix.split(whereSeparator: \.isWhitespace).suffix(3).contains { w in
@@ -293,15 +372,9 @@ enum ChatCompletion {
         if t.hasPrefix("["), t.hasSuffix("]") { return "" }
         if t.hasPrefix("...") || t.hasPrefix("…") { t = String(t.drop { $0 == "." || $0 == "…" }).trimmingCharacters(in: .whitespaces) }
 
-        // Echo: the reply starts by repeating the last 2+ words of the text.
-        let words = prefix.split(whereSeparator: \.isWhitespace)
-        for k in stride(from: min(6, words.count), through: 2, by: -1) {
-            let end = words.suffix(k).joined(separator: " ")
-            if t.lowercased() == end.lowercased() { return "" }
-            if t.lowercased().hasPrefix(end.lowercased() + " ") {
-                t = String(t.dropFirst(end.count + 1))
-                break
-            }
+        if let rest = stripEcho(t, prefix: prefix) {
+            if rest.trimmingCharacters(in: .whitespaces).isEmpty { return "" }
+            t = rest
         }
         guard let first = t.first, let last = prefix.last else { return t }
         if last == "\n" { return continueList(t, after: prefix) }
@@ -390,7 +463,31 @@ enum ChatCompletion {
 }
 
 /// Dictionary checks in the user's own languages (e.g. English and Spanish).
+/// A small thread-safe cache: each suggestion asks about the same text and words many times (on the main thread for
+/// the typo check and hint, on the network thread for the join), and the same words again on the next keystroke.
+final class Memo<Key: Hashable, Value> {
+    private var store: [Key: Value] = [:]
+    private let lock = NSLock()
+    private let limit: Int
+    init(limit: Int) { self.limit = limit }
+    func value(_ key: Key, _ make: () -> Value) -> Value {
+        lock.lock()
+        if let v = store[key] { lock.unlock(); return v }
+        lock.unlock()
+        let v = make()
+        lock.lock()
+        if store.count >= limit { store.removeAll(keepingCapacity: true) }
+        store[key] = v
+        lock.unlock()
+        return v
+    }
+}
+
 enum Spelling {
+    private static let languageMemo = Memo<String, String?>(limit: 64)
+    private static let wordMemo = Memo<String, Bool>(limit: 4000)
+    private static let completionsMemo = Memo<String, [String]>(limit: 2000)
+
     /// Spell-checker languages matching the user's preferred languages (e.g. English and Spanish).
     static let languages: [String] = {
         let available = NSSpellChecker.shared.availableLanguages
@@ -410,23 +507,25 @@ enum Spelling {
                                "is", "be", "do", "go", "no", "up", "us", "we", "me", "my", "you", "he", "she", "they", "not", "all", "with"]
         let es: Set<String> = ["y", "e", "o", "u", "a", "de", "la", "el", "en", "un", "una", "que", "se", "lo", "le", "mi", "tu", "su",
                                "es", "al", "del", "con", "por", "no", "me", "te", "ya", "si"]
-        let r = NLLanguageRecognizer()
-        r.languageConstraints = [.english, .spanish]
-        r.processString(String(text.suffix(300)))
-        switch r.dominantLanguage {
-        case .spanish?: return es
-        case .english?: return en
+        switch language(of: text).map({ String($0.prefix(2)) }) {
+        case "es"?: return es
+        case "en"?: return en
         default: return en.union(es)
         }
     }
 
     /// The user's spell-checker language that `text` is clearly written in, if any.
     static func language(of text: String) -> String? {
+        let text = String(text.suffix(300))
+        return languageMemo.value(text) { detectLanguage(text) }
+    }
+
+    private static func detectLanguage(_ text: String) -> String? {
         let r = NLLanguageRecognizer()
         // Only the user's own languages: far more confident on short texts ("Nos vemos esta" is 51 % Spanish
         // unconstrained, 99.9 % among English and Spanish).
         r.languageConstraints = Array(Set(languages.map { NLLanguage(rawValue: String($0.prefix { $0 != "_" })) }))
-        r.processString(String(text.suffix(300)))
+        r.processString(text)
         guard let (lang, p) = r.languageHypotheses(withMaximum: 1).first, p > 0.6 else { return nil }
         return languages.first { $0 == lang.rawValue || $0.hasPrefix(lang.rawValue + "_") }
     }
@@ -439,16 +538,20 @@ enum Spelling {
 
     /// Dictionary completions of a partial word, most common first, in the text's language (or the first one).
     static func completions(of partial: String, in text: String? = nil) -> [String] {
-        let r = NSRange(location: 0, length: (partial as NSString).length)
-        return NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: languages(for: text).first,
-                                                 inSpellDocumentWithTag: 0) ?? []
+        completions(of: partial, language: languages(for: text).first)
+    }
+
+    private static func completions(of partial: String, language: String?) -> [String] {
+        completionsMemo.value(partial + "|" + (language ?? "")) {
+            let r = NSRange(location: 0, length: (partial as NSString).length)
+            return NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: language, inSpellDocumentWithTag: 0) ?? []
+        }
     }
 
     /// The dictionary's first completion of a partial word, trying the text's language first ("apprec" → "appreciate").
     static func completion(of partial: String, in text: String? = nil) -> String? {
-        let r = NSRange(location: 0, length: (partial as NSString).length)
         for lang in languages(for: text) {
-            let list = NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: lang, inSpellDocumentWithTag: 0) ?? []
+            let list = completions(of: partial, language: lang)
             if let w = list.first(where: { $0.lowercased().hasPrefix(partial.lowercased()) && $0.count > partial.count }) {
                 // Keep the typed capitalization.
                 return partial + w.dropFirst(partial.count)
@@ -466,10 +569,12 @@ enum Spelling {
 
     /// A word in the text's language when that's clear, else in any of the user's languages.
     static func isWord(_ w: String, in text: String? = nil) -> Bool {
-        let sc = NSSpellChecker.shared
         let langs = text.flatMap(language(of:)).map { [$0] } ?? languages
         return langs.contains { lang in
-            sc.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+            wordMemo.value(w + "|" + lang) {
+                NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false, inSpellDocumentWithTag: 0,
+                                                    wordCount: nil).location == NSNotFound
+            }
         }
     }
 }

@@ -103,17 +103,25 @@ final class LLM {
             if !ex.isEmpty { header += "[The user's own phrasing: " + ex.map { "\"\($0)\"" }.joined(separator: " ") + "]\n" }
         }
         if Settings.backend == "embedded" {
-            if !header.isEmpty { header += "\n" }
             let battery = Settings.batteryModelNow.map(GGUFStore.path(for:)).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             guard let path = battery ?? GGUFStore.activePath else { return completion(nil) }
-            LlamaEngine.shared.complete(path: path, prompt: header + prefix, maxTokens: Settings.effectiveMaxTokens, completion: completion)
+            let raw = header.isEmpty ? prefix : header + "\n" + prefix
+            let context = chatContext(header, prefix)
+            LlamaEngine.shared.complete(path: path, messages: ChatCompletion.messages(context: context, text: prefix), raw: raw,
+                                        maxTokens: Settings.effectiveMaxTokens) { text, cut, chat in
+                guard let text else { return completion(nil) }
+                // A model without a chat format continued the text itself: nothing to re-join or check.
+                completion(chat ? ChatCompletion.finish(text, cut: cut, context: context, prefix: prefix) : text)
+            }
             return
         }
+        chat(context: chatContext(header, prefix), prefix: prefix, completion: completion)
+    }
 
-        // Chat models also get the words a half-typed word may become (last: it changes with every keystroke).
-        if let hint = ChatCompletion.unfinishedWordHint(prefix) { header += hint }
-        if !header.isEmpty { header += "\n" }
-        chat(context: header, prefix: prefix, completion: completion)
+    /// Chat models also get the words a half-typed word may become (last: it changes with every keystroke).
+    private func chatContext(_ header: String, _ prefix: String) -> String {
+        let h = header + (ChatCompletion.unfinishedWordHint(prefix) ?? "")
+        return h.isEmpty ? "" : h + "\n"
     }
 
     /// MLX-Serve and Ollama: the chat prompt, then the reply re-joined to the text and checked.
@@ -133,10 +141,7 @@ final class LLM {
                 }
                 return completion(nil)
             }
-            let joined = ChatCompletion.join(reply.text, after: prefix, cut: reply.cut)
-            let checked = ChatCompletion.dropInventedFigures(joined, context: context + prefix)
-            let sameLanguage = ChatCompletion.dropLanguageSwitch(checked, prefix: prefix)
-            completion(ChatCompletion.dropAssistantReply(sameLanguage, prefix: prefix))
+            completion(ChatCompletion.finish(reply.text, cut: reply.cut, context: context, prefix: prefix))
         }
         task?.resume()
     }

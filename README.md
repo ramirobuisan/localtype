@@ -47,7 +47,7 @@ Headless engine check: `LocalType.app/Contents/MacOS/LocalType --selftest model.
 
 ## How it works
 
-An event tap watches keystrokes; after a short pause the Accessibility API reads the text before the caret, the model continues it, and a click-through panel shows the result at the caret. Tab is swallowed only while a suggestion is visible. Accepted text is typed back with synthetic key events. With MLX-Serve and Ollama, instruct models are asked through the chat endpoint to continue the text at a ‸ cursor marker (raw continuation makes them degenerate), with the app and website as context, and the reply is re-joined to the text (spacing, mid-word, echoes).
+An event tap watches keystrokes; after a short pause the Accessibility API reads the text before the caret, the model continues it, and a click-through panel shows the result at the caret. Tab is swallowed only while a suggestion is visible. Accepted text is typed back with synthetic key events. Instruct models are asked to continue the text at a ‸ cursor marker (raw continuation makes them degenerate): through the chat endpoint with MLX-Serve and Ollama, and through the model's own chat template in the built-in engine (models without one get the text to continue). The prompt carries the app and website, and for a half-typed word the dictionary's likely words. The reply is re-joined to the text (spacing, mid-word, echoes) and checked for made-up figures, a switch of language, placeholders, run-on sentences, repeats and replies addressed to the user.
 
 ## Limits
 

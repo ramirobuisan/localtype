@@ -188,6 +188,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Mail", "Thanks for the update. ", nil, ["en"]),
         ("Messages", "ok sounds good, see you", nil, ["en"]),
         ("Mail", "Hi Tom,\n\n", nil, ["en"]),
+        ("Slack", "Thanks for the update, I'll", nil, ["en", "starts: "]),
         ("Google Chrome on github.com", "Thanks for the PR! The changes look good, but could you", nil, ["en"]),
         ("Safari on mail.google.com", "Hola Pablo,\n\nTe adjunto", nil, ["es"]),
         ("Google Chrome on reddit.com", "hole", nil, ["noassistant"]),
@@ -232,16 +233,21 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         }
         return bad
     }
-    var clean = 0
+    var clean = 0, empty = 0
     func run(_ i: Int) {
-        guard i < cases.count else { print("\n\(clean)/\(cases.count) clean"); exit(clean == cases.count ? 0 : 1) }
+        guard i < cases.count else {
+            // Showing nothing is a miss, not a wrong suggestion: counted apart.
+            print("\n\(clean)/\(cases.count) clean" + (empty > 0 ? ", \(empty) without a suggestion, \(cases.count - clean - empty) wrong" : ""))
+            exit(clean + empty == cases.count ? 0 : 1)
+        }
         let c = cases[i]
         LLM().complete(prefix: c.1, appName: c.0, screen: c.2) { out in
             DispatchQueue.main.async {
-                let bad = issues(c, out)
-                if bad.isEmpty { clean += 1 }
+                let none = out.map { $0.trimmingCharacters(in: .whitespaces).isEmpty } ?? false
+                let bad = none ? [] : issues(c, out)
+                if none { empty += 1 } else if bad.isEmpty { clean += 1 }
                 let shown = c.1.replacingOccurrences(of: "\n", with: "⏎").suffix(42)
-                print("\(bad.isEmpty ? "✓" : "✗") …\(shown) + \((out ?? "nil").debugDescription.prefix(64))  \(bad.joined(separator: ", "))")
+                print("\(none ? "·" : bad.isEmpty ? "✓" : "✗") …\(shown) + \((out ?? "nil").debugDescription.prefix(64))  \(none ? "no suggestion" : bad.joined(separator: ", "))")
                 run(i + 1)
             }
         }
@@ -271,7 +277,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
         ("I'm going in", "to the store later", " to the store later"),
         ("See you tom", "orrow then", "orrow then"),
         ("I'll send the docum", "ents today", "ents today"),
-        ("Thanks for the update", "Talk soon", " Talk soon"),
+        ("Thanks for the update", "Talk soon", ""),   // no full stop: a run-on, not "updateTalk"
         ("Te escribo para con", "firmar el contrato", "firmar el contrato"),
         ("Te llamo esta tar", "che", "de"),
         ("Could you plea", "sease let me know", ""),
@@ -283,9 +289,17 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
         ("Te llamo esta tar", "jeunta", "de"),
         ("Thanks, I really apprec", "your help", "iate your help"),
         ("Do you know if the train to Madrid", "is on time", " is on time"),
+        ("Nos vemos mañana en la universi", "¡Nos vemos mañana en la universidad!", "dad!"),
+        ("Thanks for the quick repl", "y You're welcome!", "y"),
+        ("Mañana tengo la reu", "nión Mañana tengo la reunión.", "nión"),
+        ("I'll see you on", "Monday at the office", " Monday at the office"),
+        ("Our revenue was", "[the amount we agreed]", ""),
+        ("Steps:\n1. Open the app\n2. Click Settings\n", "1. Open the app", ""),
+        ("Thanks for the update, I'll", "look into it", " look into it"),
+        ("Sounds good, we're", "all set then", " all set then"),
     ]
     for (text, reply, want) in joins {
-        let got = ChatCompletion.join(reply, after: text)
+        let got = ChatCompletion.finish(reply, cut: false, context: "", prefix: text)
         if got != want { bad += 1 }
         print("\(got == want ? "✓" : "✗") join: …\(text.suffix(24)) + \(reply.debugDescription) → \(got.debugDescription)\(got == want ? "" : " (want \(want.debugDescription))")")
     }
@@ -331,6 +345,40 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
     RunLoop.main.run()
 }
 
+// Local work per suggestion: LocalType --selftest-speed — replays sentences keystroke by keystroke through the checks a
+// suggestion goes through besides the model (typo check, unfinished-word hint, join, guards) and reports the time.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-speed" {
+    let sentences = ["Te llamo esta tarde para contarte más sobre el tema de la reunión",
+                     "Thanks for sending the slides over, I really appreciate your help with the documentation",
+                     "Mañana tengo la reunión con el equipo y luego te confirmo si podemos quedar"]
+    let reply = "de para confirmar"
+    var times: [Double] = [], parts = [0.0, 0.0, 0.0, 0.0]
+    for sentence in sentences {
+        var prefix = ""
+        for ch in sentence {
+            prefix.append(ch)
+            let t0 = Date()
+            if let w = Controller.currentWord(prefix) { _ = Controller.checkTypo(w, in: prefix) }
+            let t1 = Date()
+            _ = ChatCompletion.unfinishedWordHint(prefix)
+            let t2 = Date()
+            let j = ChatCompletion.join(reply, after: prefix)
+            let t3 = Date()
+            _ = ChatCompletion.dropAssistantReply(ChatCompletion.dropLanguageSwitch(ChatCompletion.dropInventedFigures(j, context: prefix), prefix: prefix), prefix: prefix)
+            let t4 = Date()
+            for (i, (a, b)) in [(t0, t1), (t1, t2), (t2, t3), (t3, t4)].enumerated() { parts[i] += b.timeIntervalSince(a) * 1000 }
+            times.append(t4.timeIntervalSince(t0) * 1000)
+        }
+    }
+    let n = Double(times.count)
+    print(String(format: "per keystroke: typo check %.2f ms, hint %.2f ms, join %.2f ms, guards %.2f ms", parts[0] / n, parts[1] / n, parts[2] / n, parts[3] / n))
+    let sorted = times.sorted()
+    print(String(format: "%d keystrokes: mean %.2f ms, median %.2f ms, p95 %.2f ms, max %.2f ms (first %.2f ms)",
+                 times.count, times.reduce(0, +) / Double(times.count), sorted[sorted.count / 2],
+                 sorted[Int(Double(sorted.count) * 0.95)], sorted.last!, times[0]))
+    exit(0)
+}
+
 // Emoji matcher check: LocalType --selftest-emoji "I love this :fir" ":thumbs_u" …
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emoji" {
     var emojiArgs = Array(CommandLine.arguments.dropFirst(2)), texts: [String] = []
@@ -369,6 +417,27 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-scr
     }
     poll()
     RunLoop.main.run()
+}
+
+// A --selftest flag that didn't run above is missing its arguments: say how to use it rather than start a second copy
+// of the app.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1].hasPrefix("--selftest") {
+    print("""
+        Usage (all print results and exit; "-key value" pairs override settings without saving them):
+          --selftest <model.gguf> <prompt>     built-in engine, two rounds (cache reuse)
+          --selftest-mlx "text" …              suggestions from MLX-Serve for each text
+          --selftest-prompts                   prompt test set through the configured engine
+          --selftest-halfwords ["text" …]      half-typed words: join rules and live suggestions (LT_PLACE sets the app)
+          --selftest-speed                     local work per keystroke besides the model
+          --selftest-field <bundle ID>         read that app's focused field and suggest
+          --selftest-practice                  the Setup window's Try-it box
+          --selftest-labs                      alternatives and synonyms
+          --selftest-emoji "text" …            emoji matching
+          --selftest-screen <pid>              screen text recognition for that app
+          --selftest-sync                      two simulated Macs (set LOCALTYPE_SUPPORT_DIR)
+          --selftest-update                    version compare and update check
+        """)
+    exit(2)
 }
 
 let app = NSApplication.shared
