@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: "")
     private let update = NSMenuItem(title: "", action: #selector(openUpdate), keyEquivalent: "")
+    private let today = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var permissionTimer: Timer?
     private var frontmostID: String?
 
@@ -21,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.delegate = self
         m.addItem(statusLine)
+        today.isEnabled = false
+        m.addItem(today)
         m.addItem(.separator())
         for i in [toggle, perApp, perSite, models, settings, setup] { i.target = self; m.addItem(i) }
         let symbols: [(NSMenuItem, String)] = [(toggle, "power"), (perApp, "app.dashed"), (perSite, "globe"), (models, "cpu"),
@@ -48,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Controller.shared.onStatus = { [weak self] s in self?.setStatus(s, ok: s == "Ready") }
         let firstRun = !Settings.onboardingDone || CommandLine.arguments.contains("--setup")
         Sync.update()
+        // After sleep the model may have been unloaded: warm it up before the first suggestion.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { LLM.warmUp() }
+        }
         startWhenTrusted(prompt: !firstRun)
         ScreenContext.shared.prewarm()
         Updates.checkInBackgroundIfDue { [weak self] in self?.refreshUpdateItem() }
@@ -82,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Frontmost app is unchanged while our menu is open (we're an accessory app).
     func menuNeedsUpdate(_ menu: NSMenu) {
+        let words = Stats.shared.today.words
+        today.isHidden = words == 0
+        today.attributedTitle = NSAttributedString(string: "Today: \(words) word\(words == 1 ? "" : "s") typed for you",
+            attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.menuFont(ofSize: 0)])
         let app = NSWorkspace.shared.frontmostApplication
         frontmostID = app?.bundleIdentifier
         if let id = frontmostID, let name = app?.localizedName {
@@ -157,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setStatus("Connecting to MLX-Serve…", ok: nil)
             MLXServeStore.shared.prepare { [weak self] problem in
                 if let problem { self?.setStatus(problem, ok: false); return }
-                MLXServeStore.shared.autoSelect { self?.checkModelStatusOnly() }
+                MLXServeStore.shared.autoSelect { self?.checkModelStatusOnly(); LLM.warmUp() }
             }
             return
         }

@@ -14,6 +14,22 @@ final class LLM {
         LlamaEngine.shared.cancel()
     }
 
+    /// A one-token request so the model is loaded before the first real suggestion (MLX-Serve can unload idle
+    /// models; Ollama too). The built-in engine preloads separately.
+    static func warmUp() {
+        switch Settings.backend {
+        case "mlxserve":
+            if let r = MLXServeCompletion.request(context: "", text: "Hi", maxTokens: 1) { URLSession.shared.dataTask(with: r).resume() }
+        case "ollama":
+            guard let u = URL(string: Settings.endpoint + "/api/generate") else { return }
+            var r = URLRequest(url: u); r.httpMethod = "POST"
+            r.httpBody = try? JSONSerialization.data(withJSONObject: ["model": Settings.model, "prompt": "", "keep_alive": "30m"])
+            URLSession.shared.dataTask(with: r).resume()
+        default:
+            if let p = GGUFStore.activePath { LlamaEngine.shared.preload(path: p) }
+        }
+    }
+
     // MARK: Lists (Labs: alternative words, synonyms)
 
     private var listTask: URLSessionDataTask?

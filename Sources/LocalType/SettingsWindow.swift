@@ -459,6 +459,19 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         ]
     }
 
+    /// A sample sentence drawn in the chosen suggestion style.
+    private func previewRow() -> NSView {
+        let p = SuggestionPreview()
+        p.bubble = Settings.suggestionStyle == 1
+        let label = NSTextField(labelWithString: "Preview")
+        label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor
+        let s = NSStackView(views: [label, p])
+        s.orientation = .vertical; s.alignment = .leading; s.spacing = 4
+        s.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 10, right: 14)
+        p.widthAnchor.constraint(equalTo: s.widthAnchor, constant: -28).isActive = true
+        return s
+    }
+
     private func about() -> [NSView] {
         let icon = NSImageView(image: NSApp.applicationIconImage ?? iconTile("text.cursor", .systemIndigo, size: 64))
         icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
@@ -689,7 +702,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
                 popup("Suggestion style",
                       "Inline draws the suggestion as faded text in the field's own font, right where you type. Bubble shows it in a small box next to the cursor.",
                       items: ["Inline, in the field's font", "Bubble"], selected: Settings.suggestionStyle,
-                      set: { Settings.suggestionStyle = $0 }),
+                      set: { Settings.suggestionStyle = $0; self.reload() }),
+                previewRow(),
             ]),
             section("AI Settings", [
                 row("AI model", Settings.backend == "embedded" ? "Built-in engine — runs entirely inside the app."
