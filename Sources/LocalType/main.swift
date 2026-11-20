@@ -1,4 +1,5 @@
 import AppKit
+import NaturalLanguage
 import Vision
 
 AppPaths.migrateLegacyData()
@@ -156,6 +157,83 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pra
     MLXServeStore.shared.prepare { _ in
         LLM().complete(prefix: ctx.prefix, appName: ctx.appName) { out in print("suggestion: \(out.map { $0.debugDescription } ?? "nil")"); exit(0) }
     }
+    RunLoop.main.run()
+}
+
+// Prompt check: LocalType --selftest-prompts — typing situations through the real completion path, with checks for
+// the usual failures (placeholders, echoes, copied style text, wrong language, invented figures, broken lists or
+// half-typed words, ignoring the screen, rambling). Use it to compare prompt changes.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-prompts" {
+    // (app, text before the cursor, on-screen text, checks)
+    let cases: [(String, String, String?, [String])] = [
+        ("Mail", "Hi Laura,\n\nThanks for sending the slides over. I had a quick look and", nil, ["en"]),
+        ("Mail", "Thanks again for your help with the slides.\n\nBest regards,\n", nil, ["name"]),
+        ("WhatsApp", "Hola! Mañana no puedo ir a clase porque", nil, ["es"]),
+        ("Mail", "Buenos días Marta,\n\nTe escribo para", nil, ["es"]),
+        ("Mail", "Muchas gracias por todo.\n\nUn saludo,\n", nil, ["name"]),
+        ("Notes", "I'll send you the docum", nil, ["word"]),
+        ("Notes", "Nos vemos mañana en la universi", nil, ["word"]),
+        ("Mail", "Thanks, I really apprec", nil, ["word"]),
+        ("Mail", "Could you plea", nil, ["word"]),
+        ("Mail", "I'm looking forw", nil, ["word"]),
+        ("Notes", "Shopping list:\n- eggs\n- milk\n", nil, ["list:- "]),
+        ("Notes", "Steps:\n1. Open the app\n2. Click Settings\n", nil, ["list:3. "]),
+        ("Slack", "lol yeah that meeting was", nil, ["en"]),
+        ("Pages", "Dear Hiring Manager,\n\nI am writing to apply for the", nil, ["en"]),
+        ("Messages", "Do you know if the train to Madrid", nil, ["en"]),
+        ("Messages", "Running a bit late, sorry! I'll be there", nil, ["en"]),
+        ("Mail", "Quick update on the project: our total revenue last quarter was", nil, ["nofigures"]),
+        ("Mail", "Te mando el informe por email y", nil, ["es"]),
+        ("Mail", "Hi Laura,\n\nSure! I'll send you the", "Laura: Could you send me the Q3 budget numbers before Friday's board meeting?", ["screen:Q3|budget"]),
+        ("Mail", "Thanks for the update. ", nil, ["en"]),
+        ("Messages", "ok sounds good, see you", nil, ["en"]),
+        ("Mail", "Hi Tom,\n\n", nil, ["en"]),
+    ]
+    let style = Settings.instructions
+    let name = style.range(of: #"(?i)my name is ([A-ZÁÉÍÓÚÑ][\p{L}]+)"#, options: .regularExpression)
+        .map { String(style[$0]).split(separator: " ").last.map(String.init) ?? "" }
+    func lang(_ s: String) -> NLLanguage? {
+        let r = NLLanguageRecognizer(); r.languageConstraints = [.english, .spanish]; r.processString(s); return r.dominantLanguage
+    }
+    func issues(_ c: (String, String, String?, [String]), _ out: String?) -> [String] {
+        guard let s = out else { return ["no reply"] }
+        let t = s.trimmingCharacters(in: .whitespaces)
+        var bad: [String] = []
+        if t.range(of: #"[\[\]<>]"#, options: .regularExpression) != nil { bad.append("placeholder") }
+        if !style.isEmpty, t.range(of: #"(?i)my name is|i usually write"#, options: .regularExpression) != nil { bad.append("copied style") }
+        if t.split(separator: " ").count > 14 { bad.append("too long") }
+        for k in c.3 {
+            switch k {
+            case "en": if t.split(separator: " ").count >= 3, lang(t) == .spanish { bad.append("not English") }
+            case "es": if t.split(separator: " ").count >= 3, lang(t) == .english { bad.append("not Spanish") }
+            case "name": if let n = name, !t.contains(n) { bad.append("no name") }
+            case "word":
+                let tail = String(c.1.reversed().prefix { $0.isLetter }.reversed())
+                let head = String(s.prefix { $0.isLetter })
+                if s.hasPrefix(" ") || head.isEmpty || !Spelling.isWord(tail + head) { bad.append("half-typed word not finished") }
+            case "nofigures": if t.range(of: #"[$€£%]|\d{3,}"#, options: .regularExpression) != nil { bad.append("invented figure") }
+            default:
+                if k.hasPrefix("list:"), !t.hasPrefix(String(k.dropFirst(5))) { bad.append("list marker") }
+                if k.hasPrefix("screen:"), t.range(of: String(k.dropFirst(7)), options: [.regularExpression, .caseInsensitive]) == nil { bad.append("ignored screen") }
+            }
+        }
+        return bad
+    }
+    var clean = 0
+    func run(_ i: Int) {
+        guard i < cases.count else { print("\n\(clean)/\(cases.count) clean"); exit(clean == cases.count ? 0 : 1) }
+        let c = cases[i]
+        LLM().complete(prefix: c.1, appName: c.0, screen: c.2) { out in
+            DispatchQueue.main.async {
+                let bad = issues(c, out)
+                if bad.isEmpty { clean += 1 }
+                let shown = c.1.replacingOccurrences(of: "\n", with: "⏎").suffix(42)
+                print("\(bad.isEmpty ? "✓" : "✗") …\(shown) + \((out ?? "nil").debugDescription.prefix(64))  \(bad.joined(separator: ", "))")
+                run(i + 1)
+            }
+        }
+    }
+    MLXServeStore.shared.prepare { _ in run(0) }
     RunLoop.main.run()
 }
 

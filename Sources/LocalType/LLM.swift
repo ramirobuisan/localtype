@@ -93,7 +93,9 @@ final class LLM {
             }
             task = session.dataTask(with: req) { data, _, error in
                 guard error == nil, let data, let reply = MLXServeCompletion.parse(data) else { return completion(nil) }
-                completion(MLXServeCompletion.join(reply.text, after: prefix, cut: reply.cut))
+                let joined = MLXServeCompletion.join(reply.text, after: prefix, cut: reply.cut)
+                let checked = MLXServeCompletion.dropInventedFigures(joined, context: header + prefix)
+                completion(MLXServeCompletion.dropLanguageSwitch(checked, prefix: prefix))
             }
             task?.resume()
             return

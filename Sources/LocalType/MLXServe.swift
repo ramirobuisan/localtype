@@ -1,4 +1,5 @@
 import AppKit
+import NaturalLanguage
 
 /// Model source backed by a running MLX-Serve app (OpenAI-compatible server, default 127.0.0.1:11234).
 /// MLX-Serve owns the models: LocalType lists its chat models, asks it to load the chosen one,
@@ -111,13 +112,39 @@ final class MLXServeStore: ModelStore {
 /// Completion through MLX-Serve's chat endpoint. Instruct models degenerate on raw continuation
 /// ("la la la…"), but follow a short "continue this text" instruction well.
 enum MLXServeCompletion {
+    /// Chosen by scoring variants on a 22-case set (English/Spanish, mail, chat, lists, half-typed words, sign-offs,
+    /// replies with screen context, invented-number traps) against gemma-4-E4B: this one plus the examples below
+    /// passed 21/22 versus 16/20 for the previous prompt, at the same speed (the fixed part is prefix-cached).
     static let system = """
-        You are an autocomplete engine inside a text field. Continue the user's text from exactly where it stops. \
-        Reply with only the next few words, never more than one sentence: no quotes, no explanations, no repeating the text. \
-        If the text stops in the middle of a word, finish that word. Match the language, tone and formatting. \
-        Lines in [brackets] at the top are context, not part of the text. \
-        The text ends at the marker ‸, which is where the cursor is; write what comes right after it.
+        You are the autocomplete in a Mac text field. You see what the person has typed so far; the cursor is at ‸. \
+        Reply with the words that most likely come next, exactly as they would type them.
+
+        Rules:
+        - Only the continuation: a few words, at most the rest of the sentence. No quotes, no explanations, never repeat text that is already there.
+        - If the text stops in the middle of a word, start by finishing that word.
+        - On a new line in a list, continue the list in the same format.
+        - Keep the language, tone and formatting of the text: casual stays casual, lowercase stays lowercase.
+        - Never write a number, amount, date, time or name that isn't already in the text or the context: continue with general words instead, or stop before it.
+        - Lines in [brackets] before the text are context (the person's style, the app, what's on screen), not part of the text.
         """
+
+    /// Worked examples sent as earlier turns (few-shot): finishing a word, continuing a list, using what's on
+    /// screen, casual chat, and not inventing an amount. Small models follow examples much better than rules.
+    static let examples: [(user: String, reply: String)] = [
+        ("[Writing in Mail]\n\nHi Sam,\n\nThanks for the quick repl‸", "y. I'll take a look this afternoon."),
+        ("[Writing in Notes]\n\nTo do:\n- call the bank\n‸", "- book the dentist"),
+        ("[Writing in Mail]\n[On screen: Ana: Can we move our call to Thursday?]\n\nHi Ana,\n\nThursday works for me. ‸", "What time suits you?"),
+        ("[Writing in Messages]\n\nkk see u‸", "tomorrow then"),
+        ("[Writing in Mail]\n\nThe invoice total for this month comes to‸", "the amount we agreed on in the contract."),
+        ("[Writing in Mail]\n\nPlease let me kn‸", "ow if that works for you."),
+    ]
+
+    static func messages(context: String, text: String) -> [[String: String]] {
+        var m = [["role": "system", "content": system]]
+        for e in examples { m.append(["role": "user", "content": e.user]); m.append(["role": "assistant", "content": e.reply]) }
+        m.append(["role": "user", "content": context + text + "‸"])
+        return m
+    }
 
     static func request(context: String, text: String, maxTokens: Int) -> URLRequest? {
         let model = Settings.batteryModelNow ?? Settings.mlxModel
@@ -127,7 +154,7 @@ enum MLXServeCompletion {
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
             "model": model,
-            "messages": [["role": "system", "content": system], ["role": "user", "content": context + text + "‸"]],
+            "messages": messages(context: context, text: text),
             "max_tokens": maxTokens,
             "temperature": 0.2,
             "top_p": 0.9,
@@ -137,6 +164,36 @@ enum MLXServeCompletion {
         ]
         r.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return r
+    }
+
+    /// When neither the text nor its context mentions any figure, a suggested amount, percentage or long number
+    /// is made up ("revenue was" → "$15,000"): cut the suggestion just before it. Small numbers ("in 5 minutes") stay.
+    static func dropInventedFigures(_ reply: String, context: String) -> String {
+        guard !context.contains(where: \.isNumber) else { return reply }
+        let words = reply.split(separator: " ", omittingEmptySubsequences: false)
+        guard let i = words.firstIndex(where: { w in
+            w.contains(where: { "$€£¥%".contains($0) }) || w.filter(\.isNumber).count >= 3
+        }) else { return reply }
+        var kept = words[..<i].joined(separator: " ")
+        while let l = kept.last, l == " " || l == "," { kept.removeLast() }
+        return kept.trimmingCharacters(in: .whitespaces).isEmpty ? "" : kept
+    }
+
+    /// The model sometimes switches language mid-sentence ("Could you plea" → "se me gustaría…"). When the text and
+    /// the suggestion are confidently in different languages, keep only what finishes the current word, else nothing.
+    static func dropLanguageSwitch(_ suggestion: String, prefix: String) -> String {
+        func language(_ s: String) -> (NLLanguage, Double)? {
+            let r = NLLanguageRecognizer()
+            r.languageConstraints = [.english, .spanish, .french, .german, .italian, .portuguese]
+            r.processString(s)
+            return r.languageHypotheses(withMaximum: 1).first.map { ($0.key, $0.value) }
+        }
+        let tail = String(prefix.suffix(200))
+        guard suggestion.split(separator: " ").count >= 3, tail.split(separator: " ").count >= 2,
+              let (textLang, p1) = language(tail), let (sugLang, p2) = language(suggestion),
+              textLang != sugLang, p1 > 0.6, p2 > 0.6 else { return suggestion }
+        let finish = String(suggestion.prefix { $0.isLetter })   // the part that completes a half-typed word
+        return prefix.last?.isLetter == true && !suggestion.hasPrefix(" ") ? finish : ""
     }
 
     /// The reply text, and whether it was cut off by the token limit.
@@ -181,6 +238,7 @@ enum MLXServeCompletion {
         if last.isLetter || last.isNumber {
             // Mid-word: the reply finishes the word ("I'll send the docum" + "ents").
             t = repairOverlap(prefix, t)
+            if let fixed = completeIgnoredWord(prefix, t) { return fixed }
             return finishesWord(prefix, t) ? t : " " + t
         }
         if "([{\"“‘/-".contains(last) { return t }
@@ -206,11 +264,6 @@ enum MLXServeCompletion {
         return indent + marker + reply
     }
 
-    private static let shortWords: Set<String> = [
-        "a", "an", "the", "to", "of", "in", "on", "at", "by", "for", "and", "or", "but", "so", "as", "if", "it", "is",
-        "be", "do", "go", "no", "up", "us", "we", "me", "my", "you", "he", "she", "they", "not", "all", "with",
-        "y", "e", "o", "u", "de", "la", "el", "en", "un", "una", "que", "se", "lo", "le", "mi", "tu", "su", "es", "al", "del", "con", "por",
-    ]
 
     /// Small models sometimes repeat the end of a partial word ("timel" → "eline" for "timeline").
     /// If dropping the repeated letters turns the join into a real word (and the plain join isn't one), drop them.
@@ -225,6 +278,18 @@ enum MLXServeCompletion {
         return reply
     }
 
+    /// The model sometimes skips a half-typed word and starts a new one ("I really apprec" → "your help"), and
+    /// gluing them gives "apprecyour help". Finish the word from the dictionary instead ("iate your help"); if the
+    /// reply is garbled too, or no dictionary word fits, return "" so nothing is shown.
+    private static func completeIgnoredWord(_ prefix: String, _ reply: String) -> String? {
+        let tail = String(prefix.reversed().prefix { $0.isLetter }.reversed())
+        let head = String(reply.prefix { $0.isLetter })
+        guard tail.count >= 2, !head.isEmpty, !Spelling.isWord(tail), !Spelling.isWord(tail + head) else { return nil }
+        guard Spelling.isWord(head) else { return "" }   // neither finishes the word nor makes sense on its own
+        guard let word = Spelling.completion(of: tail) else { return "" }
+        return String(word.dropFirst(tail.count)) + " " + reply
+    }
+
     /// True when the reply continues the word the text ends in: that word isn't a word yet ("docum"),
     /// or the joined form is a normal completion of it ("rem" + "ind") and the reply doesn't simply start
     /// with a short word of its own ("in" + "to the store").
@@ -233,7 +298,7 @@ enum MLXServeCompletion {
         let head = String(reply.prefix { $0.isLetter })
         guard !tail.isEmpty, !head.isEmpty else { return false }
         if !Spelling.isWord(tail) { return true }
-        if shortWords.contains(head.lowercased()) { return false }
+        if Spelling.shortWords(for: prefix).contains(head.lowercased()) { return false }
         let joined = tail + head
         guard Spelling.isWord(joined) else { return false }
         if !Spelling.isWord(head) { return true }
@@ -257,6 +322,36 @@ enum Spelling {
         }
         return out.isEmpty ? ["en"] : out
     }()
+
+    /// Short words that start a new word on their own, for the language the text is written in
+    /// ("in" + "to the store" is two words in English; "se" is a word in Spanish but "plea" + "se" is "please").
+    static func shortWords(for text: String) -> Set<String> {
+        let en: Set<String> = ["a", "an", "the", "to", "of", "in", "on", "at", "by", "for", "and", "or", "but", "so", "as", "if", "it",
+                               "is", "be", "do", "go", "no", "up", "us", "we", "me", "my", "you", "he", "she", "they", "not", "all", "with"]
+        let es: Set<String> = ["y", "e", "o", "u", "a", "de", "la", "el", "en", "un", "una", "que", "se", "lo", "le", "mi", "tu", "su",
+                               "es", "al", "del", "con", "por", "no", "me", "te", "ya", "si"]
+        let r = NLLanguageRecognizer()
+        r.languageConstraints = [.english, .spanish]
+        r.processString(String(text.suffix(300)))
+        switch r.dominantLanguage {
+        case .spanish?: return es
+        case .english?: return en
+        default: return en.union(es)
+        }
+    }
+
+    /// The dictionary's first completion of a partial word in the user's languages ("apprec" → "appreciate").
+    static func completion(of partial: String) -> String? {
+        let r = NSRange(location: 0, length: (partial as NSString).length)
+        for lang in languages {
+            let list = NSSpellChecker.shared.completions(forPartialWordRange: r, in: partial, language: lang, inSpellDocumentWithTag: 0) ?? []
+            if let w = list.first(where: { $0.lowercased().hasPrefix(partial.lowercased()) && $0.count > partial.count }) {
+                // Keep the typed capitalization.
+                return partial + w.dropFirst(partial.count)
+            }
+        }
+        return nil
+    }
 
     /// A word in any of the user's languages.
     static func isWord(_ w: String) -> Bool {
