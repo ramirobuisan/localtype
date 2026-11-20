@@ -79,10 +79,12 @@ enum AX {
         let restOfLine = after.prefix { $0 != "\n" }
         guard Settings.completeInside || restOfLine.allSatisfy({ $0 == " " || $0 == "\t" }) else { return nil }
 
-        let prefix = ns.substring(to: caret)
+        // Rich web editors (Discord, Slack…) keep zero-width characters in "empty" fields; they aren't text.
+        let invisible: Set<Character> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}"]
+        let prefix = ns.substring(to: caret).filter { !invisible.contains($0) }
         guard prefix.contains(where: { !$0.isWhitespace }) else { return nil }
 
-        guard let (rect, h) = caretRect(el, caret: caret, text: ns) else { return nil }
+        guard let (rect, h) = caretRect(el, caret: caret, text: ns) ?? markerCaretRect(el) else { return nil }
         let app = NSRunningApplication(processIdentifier: pid)
         return FieldContext(element: el, prefix: String(prefix.suffix(1500)), caretRect: rect, lineHeight: h,
                             bundleID: app?.bundleIdentifier, appName: app?.localizedName, pid: pid, domain: webDomain(of: el),
@@ -128,6 +130,21 @@ enum AX {
         guard let r = bounds(el, location, length) else { return nil }
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
         return NSRect(x: r.minX, y: primaryH - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// Caret position through the text-marker API (Chromium/WebKit). Rich editors in web and Electron apps
+    /// (Discord, Slack, Notion…) often return an empty rect for AXBoundsForRange but a real one here.
+    private static func markerCaretRect(_ el: AXUIElement) -> (NSRect, CGFloat)? {
+        var range: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, "AXSelectedTextMarkerRange" as CFString, &range) == .success, let range else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, "AXBoundsForTextMarkerRange" as CFString, range, &out) == .success,
+              let out, CFGetTypeID(out) == AXValueGetTypeID() else { return nil }
+        var r = CGRect.zero
+        guard AXValueGetValue(out as! AXValue, .cgRect, &r), r.height > 0, r.origin != .zero else { return nil }
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0
+        // A collapsed range: its left edge is the caret.
+        return (NSRect(x: r.minX, y: primaryH - r.minY - r.height, width: 0, height: r.height), r.height)
     }
 
     /// Chromium and Electron apps (Chrome, Slack, Discord, VS Code, Obsidian…) only build their accessibility tree
