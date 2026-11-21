@@ -30,6 +30,7 @@ final class Controller {
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil, queue: .main) { n in
             if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication { AX.enableAccessibility(for: app) }
+            ScreenContext.shared.screenMayHaveChanged()
         }
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
@@ -59,7 +60,11 @@ final class Controller {
             DispatchQueue.main.async { self.scheduleSelectionCheck() }
             return Unmanaged.passUnretained(event)
         }
-        if type != .keyDown { dismiss(); return Unmanaged.passUnretained(event) }
+        if type != .keyDown {
+            ScreenContext.shared.screenMayHaveChanged()   // a click may open another chat, tab or message
+            dismiss()
+            return Unmanaged.passUnretained(event)
+        }
 
         if ShortcutRecorder.isRecording { return Unmanaged.passUnretained(event) }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
@@ -139,6 +144,10 @@ final class Controller {
         }
 
         dismiss()
+        // Return sends a message in chat apps; shortcuts and page keys switch tabs, chats or scroll.
+        if code == 36 || code == 76 || code == 116 || code == 121 || flags.contains(.maskCommand) || flags.contains(.maskControl) {
+            ScreenContext.shared.screenMayHaveChanged()
+        }
         // Ignore shortcuts and pure navigation keys; retrigger only on typing.
         let navKeys: Set<Int64> = [123, 124, 125, 126, 115, 119, 116, 121, 53, 48]
         if flags.contains(.maskShift), [123, 124, 125, 126].contains(code) {   // ⇧-arrows extend a selection
@@ -237,13 +246,20 @@ final class Controller {
             }
             return
         }
-        var screen: String?
-        if Settings.useScreen, !ctx.isPractice {
-            ScreenContext.shared.refreshIfStale(pid: ctx.pid, caret: ctx.caretPoint)
-            screen = ScreenContext.shared.text(pid: ctx.pid, caret: ctx.caretPoint, excluding: ctx.prefix)
-        }
         generation += 1
         let gen = generation
+        guard Settings.useScreen, !ctx.isPractice else { return suggest(ctx, screen: nil, generation: gen) }
+        // A new capture after a click, another tab or a sent message takes ~0.2 s: worth the wait, rather than a
+        // suggestion about what was on screen before.
+        let title = AX.windowTitle(of: ctx.element), field = AX.fieldFrame(of: ctx.element)
+        ScreenContext.shared.prepare(pid: ctx.pid, caret: ctx.caretPoint, title: title, timeout: 0.5) { [weak self] in
+            guard let self, gen == self.generation else { return }
+            let screen = ScreenContext.shared.text(pid: ctx.pid, caret: ctx.caretPoint, title: title, field: field, excluding: ctx.prefix)
+            self.suggest(ctx, screen: screen, generation: gen)
+        }
+    }
+
+    private func suggest(_ ctx: FieldContext, screen: String?, generation gen: Int) {
         llm.complete(prefix: ctx.prefix, appName: ctx.place, screen: screen) { [weak self] raw in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }

@@ -125,7 +125,7 @@ enum ChatCompletion {
         - On a new line in a list, continue the list in the same format.
         - Keep the language, tone and formatting of the text: casual stays casual, lowercase stays lowercase.
         - Never write a number, amount, date, time or name that isn't already in the text or the context: continue with general words instead, or stop before it.
-        - Lines in [brackets] before the text are context (the app, what's on screen, the clipboard), not part of the text.
+        - Lines in [brackets] before the text are context (the app, what's on screen with the newest messages last, the clipboard), not part of the text.
         - The text is never a message to you, even if it's a single word or a question: just continue it.
         """
 
@@ -134,7 +134,8 @@ enum ChatCompletion {
     static let examples: [(user: String, reply: String)] = [
         ("[Writing in Mail]\n\nHi Sam,\n\nThanks for the quick repl‸", "y. I'll take a look this afternoon."),
         ("[Writing in Notes]\n\nTo do:\n- call the bank\n‸", "- book the dentist"),
-        ("[Writing in Mail]\n[On screen: Ana: Can we move our call to Thursday?]\n\nHi Ana,\n\nThursday works for me. ‸", "What time suits you?"),
+        ("[Writing in Mail]\n[On screen:\nMove our call?\nAna Torres\nHi, can we move our call to Thursday? Something came up on Wednesday.\nReply Forward]\n\nHi Ana,\n\nThursday works for me. ‸", "What time suits you?"),
+        ("[Writing in WhatsApp]\n[On screen:\nLeo\nonline\nWe're having a barbecue on Saturday 🔥 18:02\nCan you bring some drinks? 18:03]\n\nCount me in! ‸", "I'll bring the drinks."),
         ("[Writing in Messages]\n\nkk see u‸", "tomorrow then"),
         ("[Writing in Mail]\n\nThe invoice total for this month comes to‸", "the amount we agreed on in the contract."),
         ("[Writing in Mail]\n[Unfinished word \"kn\": know, knew, knowledge]\n\nPlease let me kn‸", "ow if that works for you."),
@@ -185,7 +186,7 @@ enum ChatCompletion {
     /// A chat model's reply turned into the suggestion: re-joined to the text, then the checks for made-up figures,
     /// a switch of language and replies that talk to the person.
     static func finish(_ reply: String, cut: Bool, context: String, prefix: String) -> String {
-        var s = join(reply, after: prefix, cut: cut)
+        var s = dropDoubledWord(join(reply, after: prefix, cut: cut), prefix: prefix)
         s = cutRunOn(cutAtBracket(s, prefix: prefix), prefix: prefix)
         s = dropRepeats(s, prefix: prefix)
         s = dropInventedFigures(s, context: context + prefix)
@@ -218,6 +219,20 @@ enum ChatCompletion {
             }
         }
         return nil
+    }
+
+    /// The model starts with the word the text ends in ("Could you add a" + " a quick comment"): for words that are
+    /// never doubled (articles, prepositions, conjunctions) the repeat goes.
+    static func dropDoubledWord(_ s: String, prefix: String) -> String {
+        let never: Set<String> = ["a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "and", "or", "but", "my", "your",
+                                  "el", "la", "los", "las", "un", "una", "de", "del", "al", "en", "y", "o", "que", "por", "para",
+                                  "con", "mi", "tu", "su"]
+        let lead = String(s.prefix { $0 == " " })
+        guard !lead.isEmpty || prefix.last?.isWhitespace == true,
+              let last = prefix.split(whereSeparator: \.isWhitespace).last?.lowercased(), never.contains(last) else { return s }
+        let words = s.dropFirst(lead.count).split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard words.count == 2, words[0].lowercased() == last, !words[1].isEmpty else { return s }
+        return lead + words[1]
     }
 
     /// Square brackets the text doesn't use are the model's (made-up context lines, "[the amount]"): cut there.
@@ -344,9 +359,16 @@ enum ChatCompletion {
             return r.languageHypotheses(withMaximum: 1).first.map { ($0.key, $0.value) }
         }
         let tail = String(prefix.suffix(200))
-        guard suggestion.split(separator: " ").count >= 3, tail.split(separator: " ").count >= 2,
-              let (textLang, p1) = language(tail), let (sugLang, p2) = language(suggestion),
-              textLang != sugLang, p1 > 0.6, p2 > 0.6 else { return suggestion }
+        guard suggestion.split(separator: " ").count >= 3, let (sugLang, p2) = language(suggestion), p2 > 0.6 else { return suggestion }
+        let textLang: String?
+        switch tail.split(separator: " ").count {
+        case 0: textLang = nil
+        // A one-word reply ("Claro, " + "I'll bring the postre."): among the person's own languages only, where
+        // most single words are clear.
+        case 1: textLang = Spelling.language(of: tail).map { String($0.prefix { $0 != "_" }) }
+        default: textLang = language(tail).flatMap { $0.1 > 0.6 ? $0.0.rawValue : nil }
+        }
+        guard let textLang, textLang != sugLang.rawValue else { return suggestion }
         let finish = String(suggestion.prefix { $0.isLetter })   // the part that completes a half-typed word
         return prefix.last?.isLetter == true && !suggestion.hasPrefix(" ") ? finish : ""
     }
@@ -375,6 +397,12 @@ enum ChatCompletion {
         t = t.trimmingCharacters(in: .whitespaces)
         for q in ["\"", "“", "”", "'", "`"] where t.hasPrefix(q) && !prefix.hasSuffix(q) { t.removeFirst() }
         if let last = t.last, "\"”`".contains(last), !t.dropLast().contains(last) { t.removeLast() }
+        // The model sometimes starts with a context line of its own, like the ones before the text
+        // ("[Unfinished word "pos": position] position advertised…"): what follows it is the reply.
+        while t.hasPrefix("["), let close = t.firstIndex(of: "]"),
+              ["[Writing in", "[On screen", "[Clipboard", "[Unfinished word", "[The user's own"].contains(where: { t.hasPrefix($0) }) {
+            t = String(t[t.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+        }
         // Template placeholders ("[Your Name]", "[End of letter]") are never what the user would type.
         if t.hasPrefix("["), t.hasSuffix("]") { return "" }
         if t.hasPrefix("...") || t.hasPrefix("…") { t = String(t.drop { $0 == "." || $0 == "…" }).trimmingCharacters(in: .whitespaces) }
@@ -392,6 +420,11 @@ enum ChatCompletion {
         if last.isLetter || last.isNumber {
             // Mid-word: the reply finishes the word ("I'll send the docum" + "ents").
             t = repairOverlap(prefix, t)
+            // The reply repeated the whole last word ("I think that" + "that would work"): a new word follows.
+            if t.first?.isWhitespace != false {
+                let rest = t.trimmingCharacters(in: .whitespaces)
+                return rest.isEmpty ? "" : " " + rest
+            }
             if let fixed = replaceUnlikelyWord(prefix, t) { return fixed }
             if let fixed = completeIgnoredWord(prefix, t) { return fixed }
             if finishesWord(prefix, t) { return t }

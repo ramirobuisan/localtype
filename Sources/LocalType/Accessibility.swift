@@ -114,6 +114,22 @@ enum AX {
                                 : screenRect(el, location: caret, length: (String(restOfLine) as NSString).length)?.maxX)
     }
 
+    /// Frame of a text field in global top-left coordinates; nil for a whole web page (a rich editor that is the
+    /// page itself), whose frame says nothing about where the field is.
+    static func fieldFrame(of el: AXUIElement) -> CGRect? {
+        guard (attr(el, kAXRoleAttribute) as String?) != "AXWebArea",
+              let p: AXValue = attr(el, kAXPositionAttribute), let s: AXValue = attr(el, kAXSizeAttribute) else { return nil }
+        var origin = CGPoint.zero, size = CGSize.zero
+        guard AXValueGetValue(p, .cgPoint, &origin), AXValueGetValue(s, .cgSize, &size), size.width > 0, size.height > 0 else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+
+    /// Title of the window containing `el`: in most apps it changes with the tab, chat or message shown.
+    static func windowTitle(of el: AXUIElement) -> String? {
+        guard let w: AXUIElement = attr(el, kAXWindowAttribute) else { return nil }
+        return attr(w, kAXTitleAttribute)
+    }
+
     /// Host of the web page containing `el`: walks up to the AXWebArea and reads its URL (http/https only).
     static func webDomain(of el: AXUIElement) -> String? {
         var cur: AXUIElement? = el

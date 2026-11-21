@@ -95,7 +95,7 @@ final class LLM {
         // models took "keep your sentences short" as an order to rewrite the text.
         var header = ""
         if let appName { header += "[Writing in \(appName)]\n" }
-        if let screen, !screen.isEmpty { header += "[On screen: \(screen)]\n" }
+        if let screen, !screen.isEmpty { header += "[On screen:\n\(screen)]\n" }
         if Settings.useClipboard, let clip = NSPasteboard.general.string(forType: .string) {
             let c = clip.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
             if !c.isEmpty { header += "[Clipboard: \(c.prefix(400))]\n" }

@@ -6,7 +6,7 @@ A macOS menu-bar app that suggests how to finish your sentence in **any app**, u
 
 - Ghost-text suggestion at the caret · each **Tab** accepts one word · **⌥Tab** accepts it all · **Esc** dismisses
 - Models: MLX-Serve (default when installed; uses any chat model it has, nothing downloaded), a built-in [llama.cpp](https://github.com/ggml-org/llama.cpp) engine (Metal, download / import GGUF in-app), or Ollama
-- Screen context: reads the window you're typing in (ScreenCaptureKit + on-device Vision OCR) so replies fit the conversation
+- Screen context: reads the window you're typing in (ScreenCaptureKit + on-device Vision OCR) so replies fit the conversation. Only the column of the field you're in counts (not a chat list or sidebar beside it), and after a click, another tab or chat, or a sent message it reads the window again before suggesting
 - Emoji: `:fire` → 🔥, `:thumbs_up:`, a lone ` :` for your most-used, emoticons (`:-)` → 🙂, `<3` → ❤️), preferred skin tone and gender (↓/↑ for other matches)
 - Inline ghost text in the field's own font (read via Accessibility), or a bubble; typo fixes strike through the typo
 - Per-app and per-website rules (websites work in any browser), typing-history viewer with per-app deletion
@@ -41,7 +41,7 @@ On first launch a setup window walks through **Accessibility** permission (requi
 
 Releasing: `scripts/release.sh <version> <notes.md>` bumps the version, builds an ad-hoc-signed app, checks it contains nothing from your Mac, and publishes the zip with its SHA-256 (the app's built-in updater verifies downloads against it). `scripts/make-icon.swift` regenerates the app icon.
 
-Self-tests: `--selftest model.gguf "text"` (built-in engine), `--selftest-mlx "text"` (MLX-Serve), `--selftest-emoji ":fir"`, `--selftest-screen <pid>`, `--selftest-field <bundle ID>` (reads an app's focused field), `--selftest-labs`, `--selftest-update`, and `LOCALTYPE_SUPPORT_DIR=/tmp/x --selftest-sync` (two simulated Macs in a scratch folder).
+Self-tests: `--selftest model.gguf "text"` (built-in engine), `--selftest-mlx "text"` (MLX-Serve), `--selftest-emoji ":fir"`, `--selftest-screen <pid>`, `--selftest-screen-layout` (which screen text a reply box gets, on a mock chat window), `--selftest-field <bundle ID>` (reads an app's focused field, with its screen text), `--selftest-labs`, `--selftest-update`, and `LOCALTYPE_SUPPORT_DIR=/tmp/x --selftest-sync` (two simulated Macs in a scratch folder).
 
 Headless engine check: `LocalType.app/Contents/MacOS/LocalType --selftest model.gguf "Some text to continue"`
 
@@ -51,7 +51,7 @@ An event tap watches keystrokes; after a short pause the Accessibility API reads
 
 ## Limits
 
-Apps that don't expose caret bounds via Accessibility (some Electron apps, terminals) get no suggestions. The first screen-context read in a session takes ~25 s while the OCR model loads (it's warmed up in the background at launch); after that ~0.3 s. Ad-hoc builds lose the Accessibility grant on every rebuild; sign with your own certificate (`SIGN_ID=…`) to keep it.
+Apps that don't expose caret bounds via Accessibility (some Electron apps, terminals) get no suggestions. The first screen-context read in a session takes ~25 s while the OCR model loads (it's warmed up in the background at launch); after that ~0.15–0.3 s. Ad-hoc builds lose the Accessibility grant on every rebuild; sign with your own certificate (`SIGN_ID=…`) to keep it.
 
 ## License
 

@@ -53,20 +53,61 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-mlx
 // (works with the app in the background), then asks the model for a suggestion.
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-field" {
     _ = NSApplication.shared
-    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: CommandLine.arguments[2]).first,
-          let el = AX.focusedElement(ofApp: app.processIdentifier) else { print("no focused element"); exit(1) }
-    guard let ctx = AX.readContext(element: el) else {
-        print("readContext: nil — LocalType would not suggest here (see a field probe for which check fails)"); exit(1)
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: CommandLine.arguments[2]).first else {
+        print("not running"); exit(1)
     }
-    print("prefix: …\(ctx.prefix.suffix(50).debugDescription) (\(ctx.prefix.count) chars)")
-    print("caret: \(ctx.caretRect) line height \(ctx.lineHeight)")
-    print("font: \(ctx.style.map { "\($0.font.fontName) \($0.font.pointSize)" } ?? "unknown (system font fallback)")")
-    print("domain: \(ctx.domain ?? "none") · prompt place: \(ctx.place ?? "none")")
+    AX.enableAccessibility(for: app)
+    // A browser in the background may report no focused element: the first text area in its windows will do.
+    func firstTextArea(_ el: AXUIElement, depth: Int = 0) -> AXUIElement? {
+        var v: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v) == .success, v as? String == kAXTextAreaRole { return el }
+        guard depth < 40, AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v) == .success,
+              let kids = v as? [AXUIElement] else { return nil }
+        for k in kids { if let f = firstTextArea(k, depth: depth + 1) { return f } }
+        return nil
+    }
+    guard let el = AX.focusedElement(ofApp: app.processIdentifier) ?? firstTextArea(AXUIElementCreateApplication(app.processIdentifier)) else {
+        print("no focused element"); exit(1)
+    }
+    let title = AX.windowTitle(of: el), field = AX.fieldFrame(of: el)
+    var pid: pid_t = 0
+    AXUIElementGetPid(el, &pid)
+    let prefix: String, caret: CGPoint, place: String?
+    if let ctx = AX.readContext(element: el) {
+        print("prefix: …\(ctx.prefix.suffix(50).debugDescription) (\(ctx.prefix.count) chars)")
+        print("caret: \(ctx.caretRect) line height \(ctx.lineHeight)")
+        print("font: \(ctx.style.map { "\($0.font.fontName) \($0.font.pointSize)" } ?? "unknown (system font fallback)")")
+        print("domain: \(ctx.domain ?? "none") · prompt place: \(ctx.place ?? "none")")
+        (prefix, caret, place) = (ctx.prefix, ctx.caretPoint, ctx.place)
+    } else {
+        // A browser in the background doesn't lay out its caret: the rest can still be checked with the caret at the
+        // start of the field.
+        var v: CFTypeRef?
+        guard let f = field, AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success, let text = v as? String else {
+            print("readContext: nil — LocalType would not suggest here (see a field probe for which check fails)"); exit(1)
+        }
+        print("readContext: nil (no caret position; an app in the background often has none) — caret taken as the field's start")
+        let app = NSRunningApplication(processIdentifier: pid)
+        let domain = AX.webDomain(of: el)
+        (prefix, caret, place) = (text, CGPoint(x: f.minX + 4, y: f.minY + 12),
+                                  domain.map { "\(app?.localizedName ?? "") on \($0)" } ?? app?.localizedName)
+    }
+    // The screen text as a suggestion would get it (needs "Screen context" on and Screen Recording).
+    print("window: \(title.map { $0.debugDescription } ?? "nil") · field: \(field.map { "\($0)" } ?? "none")")
     let t0 = Date()
-    MLXServeStore.shared.prepare { _ in
-        LLM().complete(prefix: ctx.prefix, appName: ctx.place) { out in
-            print("suggestion [\(Int(Date().timeIntervalSince(t0) * 1000)) ms]: \(out.map { $0.debugDescription } ?? "nil")")
-            exit(0)
+    ScreenContext.shared.prepare(pid: pid, caret: caret, title: title, timeout: 30) {
+        var screen: String?
+        if Settings.useScreen {
+            let whole = ScreenContext.shared.text(pid: pid, caret: caret, title: title, field: nil, excluding: prefix)
+            screen = ScreenContext.shared.text(pid: pid, caret: caret, title: title, field: field, excluding: prefix)
+            print("── screen [\(Int(Date().timeIntervalSince(t0) * 1000)) ms], whole window:\n\(whole ?? "none")\n── for this field:\n\(screen ?? "none")\n──")
+        }
+        let t1 = Date()
+        MLXServeStore.shared.prepare { _ in
+            LLM().complete(prefix: prefix, appName: place, screen: screen) { out in
+                print("suggestion [\(Int(Date().timeIntervalSince(t1) * 1000)) ms]: \(out.map { $0.debugDescription } ?? "nil")")
+                exit(0)
+            }
         }
     }
     RunLoop.main.run()
@@ -165,7 +206,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pra
 // half-typed words, ignoring the screen, rambling). Use it to compare prompt changes.
 if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-prompts" {
     // (app, text before the cursor, on-screen text, checks)
-    let cases: [(String, String, String?, [String])] = [
+    let allCases: [(String, String, String?, [String])] = [
         ("Mail", "Hi Laura,\n\nThanks for sending the slides over. I had a quick look and", nil, ["en"]),
         ("Mail", "Thanks again for your help with the slides.\n\nBest regards,\n", nil, ["name"]),
         ("WhatsApp", "Hola! Mañana no puedo ir a clase porque", nil, ["es"]),
@@ -184,7 +225,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Messages", "Running a bit late, sorry! I'll be there", nil, ["en"]),
         ("Mail", "Quick update on the project: our total revenue last quarter was", nil, ["nofigures"]),
         ("Mail", "Te mando el informe por email y", nil, ["es"]),
-        ("Mail", "Hi Laura,\n\nSure! I'll send you the", "Laura: Could you send me the Q3 budget numbers before Friday's board meeting?", ["screen:Q3|budget"]),
+        ("Mail", "Hi Laura,\n\nSure! I'll send you the", "Laura: Could you send me the Q3 budget numbers before Friday's board meeting?", ["screen:Q3|budget|numbers|Friday"]),
         ("Mail", "Thanks for the update. ", nil, ["en"]),
         ("Messages", "ok sounds good, see you", nil, ["en"]),
         ("Mail", "Hi Tom,\n\n", nil, ["en"]),
@@ -199,7 +240,39 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-pro
         ("Messages", "Nos vemos esta tar", nil, ["starts:de"]),
         ("Mail", "Mañana tengo la reu", nil, ["starts:ni"]),
         ("Mail", "Thanks for the quick repl", nil, ["starts:y"]),
+        // Replies to what's on screen, as the screen reader passes it (one line per block of text, top to bottom,
+        // with the window's own labels and timestamps).
+        ("Slack", "I had a look at the",
+         "# design-team\nMarta Ruiz 10:42\nHey! Did anyone get a chance to review the new onboarding mockups? I need feedback by tomorrow\n👀 2\nCarlos Vega 10:45\nI'll look at them after lunch\nMessage #design-team",
+         ["en", "screen:mockup|onboarding|design|screen|flow"]),
+        ("WhatsApp", "Sí, allí estaré! ",
+         "Mamá\nen línea\n¿Vienes a comer el domingo? Hago paella 🥘 12:03\n¿Traes tú el postre? 12:04",
+         ["es", "screen:postre|tarta|helado|llevo|paella|comida|domingo|flan|pastel"]),
+        ("Mail", "Hi David,\n\nThanks for the reminder. I'd like to",
+         "Contract renewal\nDavid Chen\nTo: Ramiro Buisan\nHi Ramiro,\nThe current contract ends on 30 November. Could you confirm whether you want to renew it for another year, or should we discuss changes first?\nBest,\nDavid",
+         ["en", "screen:renew|contract|discuss|change|year"]),
+        ("Safari on reddit.com", "honestly for that workload",
+         "r/macbookair · 3h\nIs the M4 MacBook Air worth it for programming?\nI'm a CS student and mostly use VS Code, Docker and some light ML. Is 16 GB enough or should I get 24?\n142 comments Share\nAdd a comment",
+         ["en", "screen:16|24|GB|RAM|memory|enough|fine|plenty|Docker|Air|more"]),
+        ("Messages", "Yes! ",
+         "Laura\niMessage\nToday 18:20\nAre you still coming to the concert on Friday?\nDelivered",
+         ["en", "screen:concert|Friday|ticket|there|wait|see you|excited|coming"]),
+        ("Google Chrome on github.com", "Thanks for tracking this down! Could you add a",
+         "Fix race condition in cache invalidation #482\nalexk wants to merge 3 commits into main from fix/cache-race\nConversation 2 Commits 3 Checks 4 Files changed 5\nThe cache could be cleared while a request was still reading it. This adds a lock around the read path.",
+         ["en", "screen:test|lock|cache|race|comment|regression|read"]),
+        ("Mail", "Hola Elena,\n\nEl jueves",
+         "Reunión del proyecto\nElena Martín\nPara: Ramiro\nHola Ramiro, ¿te va bien el jueves a las 10 para revisar el proyecto? Si no, dime otra hora.\nUn saludo,\nElena",
+         ["es", "screen:me va|perfecto|bien|10|hora|nos vemos|reuni|proyecto|revis"]),
+        // The screen reader missed the column: other chats from the list are mixed in.
+        ("WhatsApp", "Claro, ",
+         "Chats\nPablo Gym\njajaja vale 11:20\nTrabajo USJ\nElena: el viernes entrego 10:58\nMamá\n¿Traes tú el postre? 12:04\nMamá\nen línea\n¿Vienes a comer el domingo? Hago paella 🥘 12:03\n¿Traes tú el postre? 12:04",
+         ["es", "screen:postre|tarta|helado|llevo|paella|comida|domingo|flan|pastel"]),
     ]
+    // LT_CASES=screen runs only the cases with something on screen; other text, the cases whose text contains it
+    // (LT_REPEAT=n runs each n times).
+    let only = ProcessInfo.processInfo.environment["LT_CASES"]
+    let picked = only == "screen" ? allCases.filter { $0.2 != nil } : only.map { o in allCases.filter { $0.1.contains(o) } } ?? allCases
+    let cases = Array(repeating: picked, count: Int(ProcessInfo.processInfo.environment["LT_REPEAT"] ?? "") ?? 1).flatMap { $0 }
     let style = Settings.instructions
     let name = style.range(of: #"(?i)my name is ([A-ZÁÉÍÓÚÑ][\p{L}]+)"#, options: .regularExpression)
         .map { String(style[$0]).split(separator: " ").last.map(String.init) ?? "" }
@@ -298,6 +371,16 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-hal
         ("Mañana tengo la reu", "nión Mañana tengo la reunión.", "nión"),
         ("I'll see you on", "Monday at the office", " Monday at the office"),
         ("Our revenue was", "[the amount we agreed]", ""),
+        ("Could you add a", "a quick comment on the PR?", " quick comment on the PR?"),
+        ("Nos vemos a las 10 en la", "la cafetería de siempre", " cafetería de siempre"),
+        ("I think that", "that would work", " would work"),
+        ("Could you add a ", "a quick comment", "quick comment"),
+        ("Claro, ", "I'll bring the dessert tomorrow.", ""),
+        ("Sure, ", "I'll bring the dessert tomorrow.", "I'll bring the dessert tomorrow."),
+        ("Vale, ", "nos vemos allí a las ocho.", "nos vemos allí a las ocho."),
+        ("I am writing to apply for the", "[Unfinished word \"pos\": position] position advertised online.", " position advertised online."),
+        ("I am writing to apply for the", "[Unfinished word \"pos\": position]", ""),
+        ("I'll send the docum", "docum", "ent"),
         ("Te llamo esta tarde para confirmar los detalles.", "Te llamo esta tarde para confirmar los detalles. ¿Te", " ¿Te"),
         ("Steps:\n1. Open the app\n2. Click Settings\n", "1. Open the app", ""),
         ("Thanks for the update, I'll", "look into it", " look into it"),
@@ -404,23 +487,124 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-emo
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest-screen", let pid = pid_t(CommandLine.arguments[2]) {
     _ = NSApplication.shared   // ScreenCaptureKit needs a WindowServer connection
     print("Screen Recording permitted: \(ScreenContext.permitted)")
-    var t0 = Date()
     print("OCR languages: \(ScreenContext.languages(supported: (try? VNRecognizeTextRequest().supportedRecognitionLanguages()) ?? []))")
-    var round = 1
-    ScreenContext.shared.refreshIfStale(pid: pid, caret: CGPoint(x: -1, y: -1))
-    func poll() {
-        if let text = ScreenContext.shared.text(pid: pid, caret: ScreenContext.shared.lastFrameCenter ?? .zero, excluding: "") {
-            print("round \(round) [\(Int(Date().timeIntervalSince(t0) * 1000)) ms] \(text.count) chars: \(text.prefix(200))")
-            if round == 2 { exit(0) }
+    func round(_ n: Int) {
+        let t0 = Date()
+        ScreenContext.shared.clear()
+        ScreenContext.shared.prepare(pid: pid, caret: CGPoint(x: -1, y: -1), title: nil, timeout: 60) {
+            let text = ScreenContext.shared.text(pid: pid, caret: ScreenContext.shared.lastFrameCenter ?? .zero, title: nil, field: nil, excluding: "")
+            guard let text else { print("no text captured"); exit(1) }
+            print("round \(n) [\(Int(Date().timeIntervalSince(t0) * 1000)) ms] \(text.count) chars: \(text.prefix(200))")
             // Second round: a warm capture, as during normal typing.
-            round = 2; t0 = Date()
-            ScreenContext.shared.clear()
-            ScreenContext.shared.refreshIfStale(pid: pid, caret: CGPoint(x: -1, y: -1))
+            if n == 2 { exit(0) } else { round(2) }
         }
-        if Date().timeIntervalSince(t0) > 60 { print("no text captured"); exit(1) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
     }
-    poll()
+    round(1)
+    RunLoop.main.run()
+}
+
+// Screen text selection: LocalType --selftest-screen-layout — opens a mock chat window (a list of other chats beside
+// the conversation, and a reply box), captures it like any other window and checks the text a suggestion would get.
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--selftest-screen-layout" {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let size = NSSize(width: 920, height: 560)
+    let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+    win.title = "design-team - Acme - Chat"
+    win.center()
+    let root = NSView(frame: NSRect(origin: .zero, size: size))
+    root.wantsLayer = true
+    root.layer?.backgroundColor = NSColor.white.cgColor
+    win.contentView = root
+    func label(_ s: String, _ x: CGFloat, _ top: CGFloat, width: CGFloat = 200, size fontSize: CGFloat = 13, bold: Bool = false) {
+        let l = NSTextField(wrappingLabelWithString: s)
+        l.font = bold ? .boldSystemFont(ofSize: fontSize) : .systemFont(ofSize: fontSize)
+        l.textColor = .black
+        l.preferredMaxLayoutWidth = width
+        let h = l.sizeThatFits(NSSize(width: width, height: 1000)).height
+        l.frame = NSRect(x: x, y: size.height - top - h, width: width, height: h)
+        root.addSubview(l)
+    }
+    let sidebar = [("Acme Inc", true), ("# general", false), ("# design-team", false), ("# random", false),
+                   ("Direct messages", true), ("Pablo Gómez", true), ("the invoice is paid, thanks", false),
+                   ("Lucía Ortega", true), ("see you at the gym tonight", false)]
+    for (i, (s, b)) in sidebar.enumerated() { label(s, 16, 20 + CGFloat(i) * 34, bold: b) }
+    // The conversation: a title, two messages. show() switches it, as clicking another chat would.
+    var shown: [NSTextField] = []
+    func show(_ title: String, _ messages: [(String, String)]) {
+        shown.forEach { $0.removeFromSuperview() }
+        let before = Set(root.subviews.map(ObjectIdentifier.init))
+        label("# " + title, 260, 20, width: 400, size: 15, bold: true)
+        var top: CGFloat = 90
+        for (who, text) in messages {
+            label(who, 260, top, width: 300, bold: true)
+            label(text, 260, top + 22, width: 560)
+            top += 110
+        }
+        shown = root.subviews.filter { !before.contains(ObjectIdentifier($0)) }.compactMap { $0 as? NSTextField }
+        win.title = title + " - Acme - Chat"
+        root.display()
+    }
+    show("design-team", [("Marta Ruiz   10:42", "Hey! Did anyone get a chance to review the new onboarding mockups? I need feedback by tomorrow morning so I can send them to the client before the review."),
+                         ("Carlos Vega   10:45", "I'll look at them after lunch")])
+    let typed = "I had a look at the"
+    let box = NSTextField(string: typed)
+    box.font = .systemFont(ofSize: 13)
+    box.frame = NSRect(x: 250, y: 20, width: 650, height: 28)
+    root.addSubview(box)
+    win.orderFrontRegardless()
+
+    let primaryH = NSScreen.screens.first?.frame.height ?? 0
+    let cocoa = win.convertToScreen(box.convert(box.bounds, to: nil))
+    let field = CGRect(x: cocoa.minX, y: primaryH - cocoa.maxY, width: cocoa.width, height: cocoa.height)
+    let caret = CGPoint(x: field.minX + 130, y: field.midY)
+    let pid = ProcessInfo.processInfo.processIdentifier
+    var bad: [String] = []
+    func screen(_ then: @escaping (String, Int) -> Void) {
+        let t0 = Date()
+        ScreenContext.shared.prepare(pid: pid, caret: caret, title: win.title, timeout: 30) {
+            then(ScreenContext.shared.text(pid: pid, caret: caret, title: win.title, field: field, excluding: typed) ?? "",
+                 Int(Date().timeIntervalSince(t0) * 1000))
+        }
+    }
+    func after(_ s: Double, _ f: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: f) }
+    after(0.8) {
+        screen { picked, ms in
+            let whole = ScreenContext.shared.text(pid: pid, caret: caret, title: win.title, field: nil, excluding: "") ?? "nil"
+            print("── whole window (\(ms) ms):\n\(whole)\n── for the reply box:\n\(picked)")
+            for s in ["random", "Pablo", "invoice", "gym", "Direct messages"] where picked.contains(s) { bad.append("other chats (\(s))") }
+            if picked.contains("I had a look") { bad.append("the reply box's own text") }
+            if !picked.split(separator: "\n").contains(where: { $0.contains("Did anyone") && $0.contains("before the review") }) {
+                bad.append("wrapped message not joined")
+            }
+            if !picked.contains("after lunch") { bad.append("missed the last message") }
+            // Nothing changed: the cached text, at once.
+            screen { _, ms in
+                print("── unchanged: \(ms) ms")
+                if ms > 20 { bad.append("waited with nothing changed") }
+                // Another chat in the same window (its title changes): a new capture, not the old chat's text.
+                show("random", [("Pablo Gómez   11:02", "Who wants to order pizza for the team lunch on Friday?")])
+                after(0.2) {
+                    screen { picked, ms in
+                        print("── another chat (\(ms) ms):\n\(picked)")
+                        if !picked.contains("pizza") || picked.contains("mockups") { bad.append("old chat's text after switching") }
+                        // New content, same title (a chat app whose title never changes), after a click.
+                        show("random", [("Lucía Ortega   11:10", "The printer on the second floor is broken again")])
+                        win.title = "random - Acme - Chat"
+                        ScreenContext.shared.screenMayHaveChanged()
+                        after(0.2) {
+                            screen { picked, ms in
+                                print("── after a click (\(ms) ms):\n\(picked)")
+                                if !picked.contains("printer") || picked.contains("pizza") { bad.append("old text after a click") }
+                                print(bad.isEmpty ? "✓ ok" : "✗ " + bad.joined(separator: ", "))
+                                exit(bad.isEmpty ? 0 : 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     RunLoop.main.run()
 }
 
@@ -439,6 +623,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1].hasPrefix("--selft
           --selftest-labs                      alternatives and synonyms
           --selftest-emoji "text" …            emoji matching
           --selftest-screen <pid>              screen text recognition for that app
+          --selftest-screen-layout             which screen text a reply box gets (opens a mock chat window)
           --selftest-sync                      two simulated Macs (set LOCALTYPE_SUPPORT_DIR)
           --selftest-update                    version compare and update check
         """)
